@@ -6,6 +6,7 @@ from multiprocessing import Pool
 import heapq
 import json
 import argparse
+import numpy as np
 from tqdm import tqdm
 
 from cs336_basics.pretokenization_example import find_chunk_boundaries
@@ -229,60 +230,205 @@ def train_bpe(input_path: str | os.PathLike,
     return vocab, merges
 
 def dump(vocab, merges, vocab_filepath, merges_filepath):
-    with open(vocab_filepath, 'wb') as f:
-        f.writelines([str(k).encode('utf-8') + '<|endoftext|>'.encode('utf-8') + vocab[k] + '\n'.encode('utf-8') for k in vocab])
-    with open(merges_filepath, 'wb') as f:
-        f.writelines([m[0] + '<|endoftext|>'.encode('utf-8') + m[1] + '\n'.encode('utf-8') for m in merges])
-
-parser = argparse.ArgumentParser()
-parser.add_argument('traintext', type=str)
-parser.add_argument('vocab_size', type=int)
-parser.add_argument('vocab_output_path', type=str, help='a txt file')
-parser.add_argument('merges_output_path', type=str, help='a txt file')
-if __name__ == '__main__':
-    args = parser.parse_args()
-    # train_bpe('data/TinyStoriesV2-GPT4-train.txt', 3000, ['<|endoftext|>'])
-    # train_bpe('data/TinyStoriesV2-GPT4-valid.txt', 3000, ['<|endoftext|>'])
-    # train_bpe('data/TinyStoriesV2-GPT4-tiny.txt', 300, ['<|endoftext|>'])
-    # train_bpe('data/TinyStoriesV2-GPT4-tinytiny.txt', 300, ['<|endoftext|>'])
-    # vocab, merges = train_bpe(
-    #     input_path='tests/fixtures/corpus.en',
-    #     vocab_size=500,
-    #     special_tokens=["<|endoftext|>"],
-    # )
-    # vocab, merges = train_bpe(
-    #     'data/TinyStoriesV2-GPT4-train.txt', 10000, ['<|endoftext|>']
-    # )
-
-    # vocab, merges = train_bpe(
-    #     'data/owt_train.txt', 32000, ['<|endoftext|>']
-    # )
-    # print(len(vocab), len(merges))
-    # vocab_filepath = 'data/owt_vocab.json'
-    # merges_filepath = 'data/owt_merges.txt'
-    # dump(vocab, merges, vocab_filepath, merges_filepath)
-
-    vocab, merges = train_bpe(
-        args.traintext, args.vocab_size, ['<|endoftext|>']
-    )
-    print(len(vocab), len(merges))
-    dump(vocab, merges, args.vocab_output_path, args.merges_output_path)
-
+    with open(vocab_filepath, 'w') as f:
+        for k in vocab:
+            print((k, [s for s in vocab[k]]), file=f)
+    with open(merges_filepath, 'w') as f:
+        for m in merges:
+            print(([x for x in m[0]], [x for x in m[1]]), file=f)
 
 class LTokenizer:
 
     def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str] | None = None):
-        pass
+        self.vocab = vocab
+        self.merges = merges
+        self.special_tokens = special_tokens
+        self.inv_vocab = {v: k for k, v in self.vocab.items()}
+        self.int_merges = [(self.inv_vocab[ka], self.inv_vocab[kb]) for ka, kb in self.merges]
+        self.int_merges_map = {item: i  for i, item in enumerate(self.int_merges)}
+
+        self.PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+        if self.special_tokens is not None:
+            special_tok_pattern = r"|".join([re.escape(spec_tokens) for spec_tokens in self.special_tokens])
+            special_tok_pattern += r"|"
+            self.PAT = special_tok_pattern + self.PAT
+            # append to vocab if not there
+            for spec_tok in self.special_tokens:
+                if spec_tok.encode('utf-8') not in self.inv_vocab:
+                    self.vocab[len(self.vocab)] = spec_tok.encode('utf-8')
+                    self.inv_vocab[spec_tok.encode('utf-8')] = len(self.vocab) - 1
+        print('pattern:', self.PAT)
+
+        self.cache = dict()
     
     @classmethod
-    def from_files(cls, vocab_filepath, merges_filepath, special_tokens):
-        pass
+    def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
+        vocab = dict()
+        merges = list()
+        with open(vocab_filepath, 'r') as f:
+            lines = f.readlines()
+            for line in lines:
+                line = eval(line)
+                vocab[line[0]] = bytes(line[1])
+        with open(merges_filepath, 'r') as f:
+            lines = f.readlines()
+            for line in lines:
+                line = eval(line)
+                merges.append((bytes(line[0]), bytes(line[1])))
+        return LTokenizer(vocab, merges, special_tokens)
 
     def encode(self, text: str) -> list[int]:
-        pass
+        chunks = []
+        st = 0
+        if self.special_tokens:
+            with tqdm(desc='strip special tokens', total=len(text)) as pbar:
+                while True:
+                    min_p, min_tok = len(text) + 1, None
+                    for spec_tok in self.special_tokens:
+                        p = text.find(spec_tok, st)
+                        if p != -1:
+                            if p < min_p:
+                                min_p, min_tok = p, spec_tok
+                            elif p == min_p and spec_tok > min_tok:
+                                min_tok = spec_tok
+                    if min_p == len(text) + 1:
+                        break
+                    if min_p > st: chunks.append(text[st: min_p])
+                    chunks.append(min_tok)
+                    pbar.update(min_p + len(min_tok) - st)
+                    st = min_p + len(min_tok)
+        if st < len(text):
+            chunks.append(text[st:])
+
+        # encode and cache in the mean time
+        ans = []
+
+        with tqdm(unit=' unique words', desc='tokenizing') as pbar:
+            with tqdm(unit=' total words', desc='tokenizing') as ppbar:
+                with tqdm(unit=' total tokens', desc='tokenizing') as pppbar:
+                    for textt in chunks:
+                        if self.special_tokens and any([textt == spec_tok for spec_tok in self.special_tokens]):
+                            ans.append(self.inv_vocab[textt.encode('utf-8')])
+                            pppbar.update(1)
+                            ppbar.update(1)
+                            continue
+                        for m in re.finditer(self.PAT, textt):
+                            # print(m.group())
+                            if m.group() not in self.cache:
+                                pbar.update(1)
+                                l = self._real_encode(m.group())
+                            else:
+                                l = self.cache[m.group()]
+                            
+                            ans.extend(l)
+                            # print(m.group(), '->', l)
+                            pppbar.update(len(l))
+                            ppbar.update(1)
+        
+        bytelen = len(text.encode('utf-8'))
+        print('total bytes:', bytelen, 'total tokens:', pppbar.n)
+        if pppbar.n > 0: print('compression ratio:', bytelen / pppbar.n)
+        return ans
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
-        pass
+        for text in iterable:
+            for num in self.encode(text):
+                yield num
 
     def decode(self, ids: list[int]) -> str:
-        pass
+        return b''.join([self.vocab[id] for id in ids]).decode('utf-8', errors='replace')
+
+    def _real_encode(self, w: str):
+        wb = w.encode('utf-8')
+        l = [self.inv_vocab[wb[i: i+1]] for i in range(len(wb))]
+
+        while True:
+            minmerge_id = len(self.int_merges) + 1
+            for i in range(len(l) - 1):
+                minmerge_id = min(minmerge_id, self.int_merges_map.get((l[i], l[i+1]), minmerge_id))
+            if minmerge_id > len(self.int_merges):
+                break
+            ka, kb = self.int_merges[minmerge_id]
+            p = []
+            for i in range(len(l) - 1):
+                if l[i] == ka and l[i+1] == kb and ((not p) or p[-1] != i-1):
+                    p.append(i)
+            for j in p[::-1]:
+                del l[j+1]
+                del l[j]
+                l.insert(j, self.inv_vocab[self.vocab[ka]+self.vocab[kb]])
+
+        # appear_token = set(l)
+        # for ka, kb in self.int_merges:
+        #     if ka in appear_token and kb in appear_token:
+        #         p = []
+        #         newtok = self.inv_vocab[self.vocab[ka]+self.vocab[kb]]
+        #         for i in range(len(l) - 1):
+        #             if l[i] == ka and l[i+1] == kb and ((not p) or p[-1] != i-1):
+        #                 p.append(i)
+        #         # print(ka, kb, l, p)
+        #         for j in p[::-1]:
+        #             del l[j + 1]
+        #             del l[j]
+        #             l.insert(j, newtok)
+        #         appear_token = set(l)
+        self.cache[w] = l
+        return l
+
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument('vocab_output_path', type=str, help='a txt file')
+parser.add_argument('merges_output_path', type=str, help='a txt file')
+parser.add_argument('--text_path', type=str, help='a txt file to encode')
+parser.add_argument('--tokenize_output_path', type=str, help='a numpy .npy file for tokenized output in numpy.array of uint16')
+parser.add_argument('--traintext', type=str)
+parser.add_argument('--vocab_size', type=int)
+"""
+Training usage:
+    uv run python cs336_basics/ltokenizer.py data/owt_vocab.txt data/owt_merges.txt --traintext data/owt_train.txt --vocab_size 32000 
+    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --traintext data/TinyStoriesV2-GPT4-train.txt --vocab_size 10000 
+    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --traintext data/TinyStoriesV2-GPT4-valid.txt --vocab_size 10000 
+Test usage:
+    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-tinytiny.txt --tokenize_output_path data/TinyStoriesV2-GPT4-tinytiny.tokenized.npy
+    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-tiny.txt --tokenize_output_path data/TinyStoriesV2-GPT4-tiny.tokenized.npy
+    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-valid.txt --tokenize_output_path data/TinyStoriesV2-GPT4-valid.tokenized.npy
+    uv run python cs336_basics/ltokenizer.py data/owt_vocab.txt data/owt_merges.txt --text_path data/owt_valid.txt --tokenize_output_path data/owt_valid.tokenized.npy
+    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-train.txt --tokenize_output_path data/TinyStoriesV2-GPT4-train.tokenized.npy
+    uv run python cs336_basics/ltokenizer.py data/owt_vocab.txt data/owt_merges.txt --text_path data/owt_train.txt --tokenize_output_path data/owt_train.tokenized.npy
+"""
+if __name__ == '__main__':
+    args = parser.parse_args()
+
+    if args.traintext is not None and args.vocab_size is not None:
+        # training mode
+        vocab, merges = train_bpe(
+            args.traintext, args.vocab_size, ['<|endoftext|>']
+        )
+        print(len(vocab), len(merges))
+        dump(vocab, merges, args.vocab_output_path, args.merges_output_path)
+    else:
+        # inference mode
+        tokenizer = LTokenizer.from_files(args.vocab_output_path, args.merges_output_path, ['<|endoftext|>'])
+        assert args.tokenize_output_path is not None and args.tokenize_output_path.endswith('.npy'), 'Need to store to a npy file'
+
+        splits = 5
+
+        starts, ends = [], []
+        with open(args.text_path, 'rb') as f:
+            boundaries = find_chunk_boundaries(f, splits, '<|endoftext|>'.encode('utf-8'))
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            starts.append(start)
+            ends.append(end)
+        
+        # serialize so RAM can afford the cost
+        results = []
+        for s, e in zip(starts, ends):
+            with open(args.text_path, 'rb') as f:
+                f.seek(s)
+                txt = f.read(e-s).decode('utf-8')
+            now_res = np.array(tokenizer.encode(txt), dtype=np.uint16)
+            results.append(now_res)
+        results = np.concat(results)
+        print('Total tokens:', len(results))
+        np.save(args.tokenize_output_path, results)
