@@ -20,6 +20,8 @@ dependencies = [
     "ty>=0.0.26",
     "ruff>=0.15.8",
     "py-spy>=0.4.2",
+    "pyyaml>=6.0.3",
+    "tyro>=1.0.15",
 ]
 
 [build-system]

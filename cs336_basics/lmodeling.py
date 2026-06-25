@@ -57,9 +57,9 @@ class LFFN(torch.nn.Module):
         self.w3 = LLinear(self.d_model, self.d_ff, device, dtype)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        t1 = self.w1.forward(x)
-        t3 = self.w3.forward(x)
-        return self.w2.forward(torch.sigmoid(t1) * t1 * t3)
+        t1 = self.w1(x)
+        t3 = self.w3(x)
+        return self.w2(torch.sigmoid(t1) * t1 * t3)
 
 class LROPE(torch.nn.Module):
 
@@ -98,7 +98,6 @@ def LNaiveSDPA(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Te
     mask = rearrange(mask, '... queries keys -> queries keys ...')
     if mask is not None:
         QK[~mask] = -torch.inf
-    mask = rearrange(mask, 'queries keys ... -> ... queries keys')
     return einsum(LSoftmax(QK, dim=1), V, 'queries keys ..., ... keys d -> ... queries d')
 
 class LMHA(torch.nn.Module):
@@ -123,64 +122,176 @@ class LMHA(torch.nn.Module):
             self.triu_cache[max_seq_len] = torch.triu(torch.ones((max_seq_len, max_seq_len), dtype=torch.bool, device=device)).T
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
-        q = rearrange(self.q_proj.forward(x), '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
-        k = rearrange(self.k_proj.forward(x), '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
-        v = rearrange(self.v_proj.forward(x), '... seqlen (h d_k) -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k)
+        q = rearrange(self.q_proj(x), '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
+        k = rearrange(self.k_proj(x), '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
+        v = rearrange(self.v_proj(x), '... seqlen (h d_k) -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k)
         if self.theta and LMHA.rope_cache:
             if token_positions is not None:
                 token_positions = token_positions.unsqueeze(-1) # add head dim
             else:
-                token_positions = torch.arange(q.shape[-3]).view(-1, 1) # default index of x
-            q = LMHA.rope_cache.forward(q, token_positions)
-            k = LMHA.rope_cache.forward(k, token_positions)
+                token_positions = torch.arange(q.shape[-3]).view(-1, 1) # default index for x
+            q = LMHA.rope_cache(q, token_positions)
+            k = LMHA.rope_cache(k, token_positions)
         q = rearrange(q, '... seqlen h d_k -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k)
         k = rearrange(k, '... seqlen h d_k -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k)
         before_proj = rearrange(LNaiveSDPA(q, k, v, self.triu_cache[self.max_seq_len][:q.shape[-2], :q.shape[-2]]), '... h seqlen d_k -> ... seqlen (h d_k)')
-        return self.output_proj.forward(before_proj)
+        return self.output_proj(before_proj)
 
 class LTransformerBlock(torch.nn.Module):
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None) -> None:
         super().__init__()
+        self.d_model = d_model
         self.ln1 = LRMSNorm(d_model, device=device, dtype=dtype)
         self.attn = LMHA(d_model, num_heads, max_seq_len, theta, device, dtype)
         self.ln2 = LRMSNorm(d_model, device=device, dtype=dtype)
         self.ffn = LFFN(d_model, d_ff, device, dtype)
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
-        t = x + self.attn.forward(self.ln1.forward(x), token_positions)
-        return t + self.ffn.forward(self.ln2.forward(t))
+        t = x + self.attn(self.ln1(x), token_positions)
+        return t + self.ffn(self.ln2(t))
 
 class LTransformerLM(torch.nn.Module):
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int, context_length: int, vocab_size: int, num_layers: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None) -> None:
         super().__init__()
         self.token_embeddings = LEmbedding(vocab_size, d_model, device, dtype)
-        self.layers = nn.Sequential(*[LTransformerBlock(d_model, num_heads, d_ff, context_length, theta, device, dtype) for _ in range(num_layers)])
+        self.layers: list[LTransformerBlock] = nn.Sequential(*[LTransformerBlock(d_model, num_heads, d_ff, context_length, theta, device, dtype) for _ in range(num_layers)])
         self.ln_final = LRMSNorm(d_model, device=device, dtype=dtype)
         self.lm_head = LLinear(d_model, vocab_size, device=device, dtype=dtype)
+
+        self.device = device
+        self.dtype = dtype
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
-        x = self.token_embeddings.forward(x)
+        x = self.token_embeddings(x)
         for layer in self.layers:
-            x = layer.forward(x, token_positions)
-        x = self.ln_final.forward(x)
-        x = self.lm_head.forward(x)
-        return x  
+            x = layer(x, token_positions)
+        x = self.ln_final(x)
+        x = self.lm_head(x)
+        return x
+    
+    def resource_count(self, batch_size, seq_len):
+        tot_params = 0
+        tot_embed_params = 0
+        each_block_params = 0
+        tot_ffn_params = 0
+        tot_attn_params = 0
+        tot_ln_params = 0
+        for param in self.token_embeddings.parameters():
+            tot_embed_params += param.numel()
+        for param in self.lm_head.parameters():
+            tot_embed_params += param.numel()
+        for param in self.ln_final.parameters():
+            tot_ln_params += param.numel()
+        for layer in self.layers:
+            if each_block_params == 0:
+                for param in layer.parameters():
+                    each_block_params += param.numel()
+            for param in layer.ln1.parameters():
+                tot_ln_params += param.numel()
+            for param in layer.ln2.parameters():
+                tot_ln_params += param.numel()
+            for param in layer.attn.parameters():
+                tot_attn_params += param.numel()
+            for param in layer.ffn.parameters():
+                tot_ffn_params += param.numel()
+            
+        for param in self.parameters():
+            tot_params += param.numel()
+        assert tot_params == tot_embed_params + tot_ln_params + tot_attn_params + tot_ffn_params
+        print('      Tot # param.:', f'{tot_params:20}', f' BF16 {(tot_params * 2e-9):5.2f} GB, BF32 {(tot_params * 4e-9):5.2f} GB')
+        print('Tot # embed param.:', f'{tot_embed_params:20}', '{:.2f}%'.format(tot_embed_params / tot_params * 100.))
+        print('   Tot # ln param.:', f'{tot_ln_params:20}', '{:.2f}%'.format(tot_ln_params / tot_params * 100.))
+        print(' Tot # attn param.:', f'{tot_attn_params:20}', '{:.2f}%'.format(tot_attn_params / tot_params * 100.))
+        print('  Tot # ffn param.:', f'{tot_ffn_params:20}', '{:.2f}%'.format(tot_ffn_params / tot_params * 100.))
+        print(' Each blk # param.:', f'{each_block_params:20}', '{:.2f}%'.format(each_block_params / tot_params * 100.))
 
+        activation_memory = 0
+        # embed
+        activation_memory += batch_size * seq_len * self.token_embeddings.weight.shape[1]
+        # each layer
+        for layer in self.layers:
+            # ln1
+            activation_memory += batch_size * seq_len * layer.d_model # pre ln1
+            activation_memory += batch_size * seq_len * layer.d_model # after ln1 for attn usage
+            # attn
+            activation_memory += 4 * batch_size * seq_len * layer.d_model # q,k,v,output proj
+            # need to cache attn scores before and after softmax because softmax backward needs that in naive (non-flash implementation)
+            activation_memory += 3 * batch_size * layer.attn.num_heads * seq_len * seq_len # LSoftmax is too naive, so it requires 3 [B,H,T,T] tensors cached for backward
+            # ln2
+            activation_memory += batch_size * seq_len * layer.d_model # pre ln2
+            activation_memory += batch_size * seq_len * layer.d_model # after ln2
+            # ffn
+            activation_memory += 4 * batch_size * seq_len * layer.ffn.d_ff # t1, sigmoid(t1), sigmoid(t1)*t1, t3; d_ff is FFN layer width
+            activation_memory += batch_size * seq_len * layer.ffn.d_ff # sigmoid(t1) * t1 * t3
+        # ln_final
+        activation_memory += batch_size * seq_len * layer.d_model
+        # lm_head
+        # activation_memory += batch_size * seq_len * self.lm_head.weight.shape[1]
+        print(f'Activation memory (bs={batch_size}, seqlen={seq_len}):', activation_memory, f' BF16 {(activation_memory * 2e-9):5.2f} GB, BF32 {(activation_memory * 4e-9):5.2f} GB')
+
+        embed_flops = 0
+        ln_flops = 0
+        residual_flops = 0
+        linear_flops = 0
+        attn_flops = 0
+        # token_embeddings
+        embed_flops += batch_size * seq_len * layer.d_model
+        # each layer
+        for layer in self.layers:
+            # ln1
+            ln_flops += batch_size * seq_len * layer.d_model * 2 + batch_size * seq_len * 2 + batch_size * seq_len * layer.d_model * 2
+            # ln2
+            ln_flops += batch_size * seq_len * layer.d_model * 2 + batch_size * seq_len * 2 + batch_size * seq_len * layer.d_model * 2
+            # residual
+            residual_flops += batch_size * seq_len * layer.d_model * 2
+            # attn
+            linear_flops += batch_size * seq_len * layer.d_model * layer.d_model * 8
+            attn_flops += batch_size * seq_len * seq_len * layer.d_model * 2
+            # ffn
+            linear_flops += batch_size * seq_len * layer.d_model * layer.ffn.d_ff * 6
+        # lastln
+        ln_flops += batch_size * seq_len * self.ln_final.d_model * 2 + batch_size * seq_len * 2 + batch_size * seq_len * self.ln_final.d_model * 2
+        # last_embed
+        embed_flops += batch_size * seq_len * self.ln_final.d_model * self.lm_head.weight.shape[1] * 2
+
+
+
+        def format_flops(now_f, tot_f):
+            s_nf = f'{now_f / 1e12:8.5f} TFlOPs '
+            return s_nf + ' {:.2f}%'.format(now_f / tot_f * 100.)
+
+        tot_flops = linear_flops + attn_flops + embed_flops + ln_flops + residual_flops
+        compute_density = tot_flops / activation_memory
+        print('Tot:     ', format_flops(tot_flops, tot_flops))
+        print('linear:  ', format_flops(linear_flops, tot_flops))
+        print('attn:    ', format_flops(attn_flops, tot_flops))
+        print('embed:   ', format_flops(embed_flops, tot_flops))
+        print('ln:      ', format_flops(ln_flops, tot_flops))
+        print('residual:', format_flops(residual_flops, tot_flops))
+        print(f'Training Density  (bs={batch_size}, seqlen={seq_len}):', compute_density)
 
 if __name__ == '__main__':
-    # llinear = LLinear(50, 100)
-    # lembed = LEmbedding(100, 10)
-    # print(lembed.forward(torch.tensor([[1, 2], [2, 3]])))
-    # lnorm = LRMSNorm(100, device='cuda')
-    # print(lnorm.forward(torch.randn((100,100,100), device='cuda')))
-    # lffn = LFFN(96, 110)
-    # print(lffn.forward(torch.randn(20, 10, 96)).shape)
-    # rope = LROPE(10000, 100, 1000)
-    # print(rope.forward(torch.randn((5,10,100),), torch.randint(0, 1000, (5,10))).shape)
-    # print(LSoftmax(torch.randn(5,5,5), dim=0))
-    mha = LMHA(96, 4, 100, None)
-    print(mha.forward(torch.randn((5, 10, 96))))
-    pass
+    import yaml
+
+    with open('cs336_basics/configs/models/gpt2_xl.yaml', 'r') as f:
+        gpt2_xl_model_config = yaml.safe_load(f)
+    with open('cs336_basics/configs/models/gpt2_large.yaml', 'r') as f:
+        gpt2_large_model_config = yaml.safe_load(f)
+    with open('cs336_basics/configs/models/gpt2_medium.yaml', 'r') as f:
+        gpt2_medium_model_config = yaml.safe_load(f)
+    with open('cs336_basics/configs/models/gpt2_small.yaml', 'r') as f:
+        gpt2_small_model_config = yaml.safe_load(f)
+
+    # config = gpt2_small_model_config
+    config = gpt2_xl_model_config
+    config |= {
+        'dtype': torch.bfloat16,
+        'device': 'cuda'
+    }
+
+    lm = LTransformerLM(**config)
+    lm.resource_count(batch_size=8, seq_len=1024)
+    # lm.resource_count(batch_size=1024, seq_len=1)
 
