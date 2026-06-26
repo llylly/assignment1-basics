@@ -55,8 +55,14 @@ def generate(model: LTransformerLM, prompt_tokens: str, tokenizer: LTokenizer,
             pred_y = pred_y.item()
             if pred_y == eof:
                 break
-            print(tokenizer.vocab[pred_y].decode('utf-8'), end='')
+            print(tokenizer.vocab[pred_y].decode('utf-8'), end='', flush=True)
     return torch.tensor(ys)
+
+"""
+Example Usage:
+uv run python cs336_basics/linference.py --config_path cs336_basic
+s/configs/gen_config_ts_small.yaml --model_path models/ts_small_corrected/step_65999.pth --prompt "You're so beautiful"
+"""
 
 if __name__ == '__main__':
     if '--config_path' in sys.argv:
