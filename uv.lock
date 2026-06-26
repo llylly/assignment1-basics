@@ -98,7 +98,6 @@ dependencies = [
     { name = "pyyaml" },
     { name = "regex" },
     { name = "ruff" },
-    { name = "simple-parsing" },
     { name = "tiktoken" },
     { name = "torch" },
     { name = "tqdm" },
@@ -120,7 +119,6 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "regex", specifier = ">=2026.3.32" },
     { name = "ruff", specifier = ">=0.15.8" },
-    { name = "simple-parsing", specifier = ">=0.1.8" },
     { name = "tiktoken", specifier = ">=0.12.0" },
     { name = "torch", specifier = "~=2.11.0" },
     { name = "tqdm", specifier = ">=4.67" },
@@ -885,19 +883,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0d/1c/73e719955c59b8e424d015ab450f51c0af856ae46ea2da83eba51cc88de1/setuptools-81.0.0.tar.gz", hash = "sha256:487b53915f52501f0a79ccfd0c02c165ffe06631443a886740b91af4b7a5845a", size = 1198299, upload-time = "2026-02-06T21:10:39.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/e3/c164c88b2e5ce7b24d667b9bd83589cf4f3520d97cad01534cd3c4f55fdb/setuptools-81.0.0-py3-none-any.whl", hash = "sha256:fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6", size = 1062021, upload-time = "2026-02-06T21:10:37.175Z" },
-]
-
-[[package]]
-name = "simple-parsing"
-version = "0.1.8"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "docstring-parser" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/be/67/e3e5b89f1c81ca574a157104b0ecebfc3096933cbf58f644c9cb0a56c94f/simple_parsing-0.1.8.tar.gz", hash = "sha256:19c2a9002ebd7ad281fce579f9b2a0aa0c4d67e1688cee0e8cdf6d8e98ec2c18", size = 255933, upload-time = "2026-01-20T23:29:05.258Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/46/eab9fe2a4a2f6665a7c79b2007121a00ba95502fef50c1537d8147b4f91c/simple_parsing-0.1.8-py3-none-any.whl", hash = "sha256:4d1ef136a28674b3ebb9760cacda4d6f01de32de0b280a869df977d182f12947", size = 113438, upload-time = "2026-01-20T23:29:04.17Z" },
 ]
 
 [[package]]
