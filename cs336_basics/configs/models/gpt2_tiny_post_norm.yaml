@@ -7,6 +7,6 @@
     'context_length': 4096,
     'theta': 10000,
     'customizations': {
-        'nope': true
+        'post_norm': true
     }
 }
