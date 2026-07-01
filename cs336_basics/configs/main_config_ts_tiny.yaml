@@ -4,13 +4,13 @@
   "val_data": "data/TinyStoriesV2-GPT4-valid.tokenized.npy",
   "save_path": "models/ts_tiny",
   "trainer": {
-    "batch_size": 16,
+    "batch_size": 32,
     "tot_steps": 66000,
-    "warmup_steps": 500,
-    "cooldown_steps": 500,
-    "learning_rate": 0.0001,
+    "warmup_steps": 5000,
+    "cooldown_steps": 5000,
+    "learning_rate": 0.001,
     "cooldown_learning_rate": 0.00001,
-    "seqlen": 512,
+    "seqlen": 256,
     "beta1": 0.9,
     "beta2": 0.99,
     "weight_decay": 0.1

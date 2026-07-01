@@ -52,6 +52,25 @@ class MainConfig:
 """
 Example Usage:
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml --trainer.learning_rate 0.0005 --run_name lr_5e-4
+
+Ablations on tiny training config:
+
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0001 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1e-4_bs_32_len_256_step_66k
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0001 --trainer.batch_size 64 --trainer.seqlen 256 --trainer.tot_steps 33000 --run_name lr_1e-4_bs_64_len_256_step_33k
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0003 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_3e-4_bs_32_len_256_step_66k
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0001 --trainer.batch_size 32 --trainer.seqlen 512 --trainer.tot_steps 33000 --run_name lr_1e-4_bs_32_len_512_step_33k
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0005 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_5e-4_bs_32_len_256_step_66k
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1e-3_bs_32_len_256_step_66k 
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0015 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1.5e-3_bs_32_len_256_step_66k
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --trainer.warmup_steps 5000 --trainer.cooldown_steps 5000 --run_name lr_1e-3_bs_32_len_256_step_66k_warmup_5k_cool_5k [* best]
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --trainer.warmup_steps 5000 --trainer.cooldown_steps 5000 --trainer.weight_decay 0.2 --run_name lr_1e-3_bs_32_len_256_step_66k_warmup_5k_cool_5k_wd_0.2 [running]
+
+Ablations on tiny arch config (from best training config):
+
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_no_rms_norm.yaml --run_name no_rms_norm
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_post_norm.yaml --run_name post_norm
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_nope.yaml --run_name nope
 """
 
 if __name__ == '__main__':

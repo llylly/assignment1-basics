@@ -115,13 +115,15 @@ class LMHA(torch.nn.Module):
     rope_cache: LROPE | None = None
     triu_cache: dict[int, torch.Tensor] = {}
 
-    def __init__(self, d_model: int, num_heads: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None):
+    def __init__(self, d_model: int, num_heads: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, nope: bool=False):
         super().__init__()
+        self.nope = nope
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_k = self.d_model // self.num_heads
         self.max_seq_len = max_seq_len
         self.theta = theta # if theta is None, no ROPE will be applied
+
         self.q_proj = LLinear(d_model, d_model, device, dtype)
         self.k_proj = LLinear(d_model, d_model, device, dtype)
         self.v_proj = LLinear(d_model, d_model, device, dtype)
@@ -151,7 +153,7 @@ class LMHA(torch.nn.Module):
         q = rearrange(q, '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
         kk = rearrange(k, '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
         vv = rearrange(v, '... seqlen (h d_k) -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k)
-        if self.theta and LMHA.rope_cache:
+        if (not self.nope) and self.theta and LMHA.rope_cache:
             if token_positions is not None:
                 token_positions = token_positions.unsqueeze(-1) # add head dim
             else:
@@ -179,27 +181,44 @@ class LMHA(torch.nn.Module):
 
 class LTransformerBlock(torch.nn.Module):
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None) -> None:
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, no_rms_norm: bool = False, post_norm: bool = False, nope: bool = False) -> None:
         super().__init__()
+        self.no_rms_norm = no_rms_norm
+        self.post_norm = post_norm
+        self.nope = nope
         self.d_model = d_model
-        self.ln1 = LRMSNorm(d_model, device=device, dtype=dtype)
-        self.attn = LMHA(d_model, num_heads, max_seq_len, theta, device, dtype)
-        self.ln2 = LRMSNorm(d_model, device=device, dtype=dtype)
+
+        self.ln1 = LRMSNorm(d_model, device=device, dtype=dtype) if not no_rms_norm else None
+        self.attn = LMHA(d_model, num_heads, max_seq_len, theta, device, dtype, nope)
+        self.ln2 = LRMSNorm(d_model, device=device, dtype=dtype) if not no_rms_norm else None
         self.ffn = LFFN(d_model, d_ff, device, dtype)
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
         # padded_tokens: torch.bool [B, T]
-        attn_x, kv_cache = self.attn(self.ln1(x), token_positions, padded_tokens, kv_cache)
-        t = x + attn_x
-        return t + self.ffn(self.ln2(t)), kv_cache
+        if not self.post_norm:
+            attn_x, kv_cache = self.attn(self.ln1(x) if not self.no_rms_norm else x, token_positions, padded_tokens, kv_cache)
+            t = x + attn_x
+            return t + self.ffn(self.ln2(t) if not self.no_rms_norm else t), kv_cache
+        else:
+            attn_x, kv_cache = self.attn(x, token_positions, padded_tokens, kv_cache)
+            t = self.ln1(x + attn_x)
+            return self.ln2(t + self.ffn(t)), kv_cache
 
 class LTransformerLM(torch.nn.Module):
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, context_length: int, vocab_size: int, num_layers: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None) -> None:
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, context_length: int, vocab_size: int, num_layers: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, customizations: dict | None = None) -> None:
         super().__init__()
+        self.customizations = customizations
+        no_rms_norm = self.customizations.get('no_rms_norm', False)
+        post_norm = self.customizations.get('post_norm', False)
+        nope = self.customizations.get('nope', False)
+        if no_rms_norm or post_norm or nope:
+            print(f'Ablationed model architecture: no_rms_norm={no_rms_norm}, post_norm={post_norm}, nope={nope}')
+        assert not (no_rms_norm and post_norm), 'Cannot require both no_rms_norm and post_norm'
+
         self.token_embeddings = LEmbedding(vocab_size, d_model, device, dtype)
-        self.layers: list[LTransformerBlock] = nn.Sequential(*[LTransformerBlock(d_model, num_heads, d_ff, context_length, theta, device, dtype) for _ in range(num_layers)])
-        self.ln_final = LRMSNorm(d_model, device=device, dtype=dtype)
+        self.layers: list[LTransformerBlock] = nn.Sequential(*[LTransformerBlock(d_model, num_heads, d_ff, context_length, theta, device, dtype, no_rms_norm=no_rms_norm, post_norm=post_norm) for _ in range(num_layers)])
+        self.ln_final = LRMSNorm(d_model, device=device, dtype=dtype) if not no_rms_norm else None
         self.lm_head = LLinear(d_model, vocab_size, device=device, dtype=dtype)
 
         self.device = device
@@ -211,7 +230,7 @@ class LTransformerLM(torch.nn.Module):
         for layer in self.layers:
             x, kv = layer(x, token_positions)
             kv_caches.append(kv)
-        x = self.ln_final(x)
+        x = self.ln_final(x) if self.ln_final else x
         x = self.lm_head(x)
         return x # discard kv cache for now
 
