@@ -167,3 +167,4 @@ cython_debug/
 data/
 tmp/
 models/
+!cs336_basics/configs/models
