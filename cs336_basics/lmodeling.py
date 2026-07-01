@@ -344,9 +344,13 @@ if __name__ == '__main__':
         gpt2_medium_model_config = yaml.safe_load(f)
     with open('cs336_basics/configs/models/gpt2_small.yaml', 'r') as f:
         gpt2_small_model_config = yaml.safe_load(f)
+    with open('cs336_basics/configs/models/gpt2_tiny.yaml', 'r') as f:
+        gpt2_tiny_model_config = yaml.safe_load(f)
 
-    config = gpt2_small_model_config
+
+    # config = gpt2_small_model_config
     # config = gpt2_xl_model_config
+    config = gpt2_tiny_model_config
     config |= {
         'dtype': torch.bfloat16,
         'device': 'cuda'
