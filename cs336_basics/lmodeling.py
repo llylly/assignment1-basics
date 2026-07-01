@@ -51,8 +51,9 @@ class LRMSNorm(torch.nn.Module):
 
 class LFFN(torch.nn.Module):
 
-    def __init__(self, d_model: int, d_ff: int, device: torch.device | None = None, dtype: torch.dtype | None = None):
+    def __init__(self, d_model: int, d_ff: int, device: torch.device | None = None, dtype: torch.dtype | None = None, silu: bool = False):
         super().__init__()
+        self.silu = silu
         self.d_model, self.d_ff = d_model, d_ff # use passed in arg
         # if d_model % 24 == 0:
         #     self.d_ff = d_model * 8 // 3
@@ -60,12 +61,17 @@ class LFFN(torch.nn.Module):
         #     self.d_ff = ((d_model * 8 // 3) // 64 + 1) * 64 # upper ceil to multiples of 64
         self.w1 = LLinear(self.d_model, self.d_ff, device, dtype)
         self.w2 = LLinear(self.d_ff, self.d_model, device, dtype)
-        self.w3 = LLinear(self.d_model, self.d_ff, device, dtype)
+        if not silu:
+            self.w3 = LLinear(self.d_model, self.d_ff, device, dtype)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        t1 = self.w1(x)
-        t3 = self.w3(x)
-        return self.w2(torch.sigmoid(t1) * t1 * t3)
+        if not self.silu:
+            t1 = self.w1(x)
+            t3 = self.w3(x)
+            return self.w2(torch.sigmoid(t1) * t1 * t3)
+        else:
+            t1 = self.w1(x)
+            return self.w2(torch.sigmoid(t1) * t1)
 
 class LROPE(torch.nn.Module):
 
@@ -181,7 +187,7 @@ class LMHA(torch.nn.Module):
 
 class LTransformerBlock(torch.nn.Module):
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, no_rms_norm: bool = False, post_norm: bool = False, nope: bool = False) -> None:
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, no_rms_norm: bool = False, post_norm: bool = False, nope: bool = False, silu: bool = False) -> None:
         super().__init__()
         self.no_rms_norm = no_rms_norm
         self.post_norm = post_norm
@@ -191,7 +197,7 @@ class LTransformerBlock(torch.nn.Module):
         self.ln1 = LRMSNorm(d_model, device=device, dtype=dtype) if not no_rms_norm else None
         self.attn = LMHA(d_model, num_heads, max_seq_len, theta, device, dtype, nope)
         self.ln2 = LRMSNorm(d_model, device=device, dtype=dtype) if not no_rms_norm else None
-        self.ffn = LFFN(d_model, d_ff, device, dtype)
+        self.ffn = LFFN(d_model, d_ff, device, dtype, silu=silu)
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
         # padded_tokens: torch.bool [B, T]
@@ -208,16 +214,17 @@ class LTransformerLM(torch.nn.Module):
 
     def __init__(self, d_model: int, num_heads: int, d_ff: int, context_length: int, vocab_size: int, num_layers: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, customizations: dict | None = None) -> None:
         super().__init__()
-        self.customizations = customizations
+        self.customizations = customizations or {}
         no_rms_norm = self.customizations.get('no_rms_norm', False)
         post_norm = self.customizations.get('post_norm', False)
         nope = self.customizations.get('nope', False)
-        if no_rms_norm or post_norm or nope:
-            print(f'Ablationed model architecture: no_rms_norm={no_rms_norm}, post_norm={post_norm}, nope={nope}')
+        silu = self.customizations.get('silu', False)
+        if no_rms_norm or post_norm or nope or silu:
+            print(f'Ablationed model architecture: no_rms_norm={no_rms_norm}, post_norm={post_norm}, nope={nope}, silu={silu}')
         assert not (no_rms_norm and post_norm), 'Cannot require both no_rms_norm and post_norm'
 
         self.token_embeddings = LEmbedding(vocab_size, d_model, device, dtype)
-        self.layers: list[LTransformerBlock] = nn.Sequential(*[LTransformerBlock(d_model, num_heads, d_ff, context_length, theta, device, dtype, no_rms_norm=no_rms_norm, post_norm=post_norm) for _ in range(num_layers)])
+        self.layers: list[LTransformerBlock] = nn.Sequential(*[LTransformerBlock(d_model, num_heads, d_ff, context_length, theta, device, dtype, no_rms_norm=no_rms_norm, post_norm=post_norm, nope=nope, silu=silu) for _ in range(num_layers)])
         self.ln_final = LRMSNorm(d_model, device=device, dtype=dtype) if not no_rms_norm else None
         self.lm_head = LLinear(d_model, vocab_size, device=device, dtype=dtype)
 
@@ -251,6 +258,17 @@ class LTransformerLM(torch.nn.Module):
         x = self.lm_head(x)
         return x, new_kv_cache
     
+    def count_parameters(self) -> tuple[int, int]: # return tot params and tot non-embed params
+        tot_params = 0
+        tot_embed_params = 0
+        for param in self.token_embeddings.parameters():
+            tot_embed_params += param.numel()
+        for param in self.lm_head.parameters():
+            tot_embed_params += param.numel()
+        for param in self.parameters():
+            tot_params += param.numel()
+        return tot_params, tot_params - tot_embed_params
+
     def resource_count(self, batch_size, seq_len):
         tot_params = 0
         tot_embed_params = 0

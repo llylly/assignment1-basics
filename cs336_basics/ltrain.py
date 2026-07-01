@@ -117,6 +117,8 @@ if __name__ == '__main__':
         val_dataset = None
     
     stats = {
+        'stat_model_param': model.count_parameters()[0],
+        'stat_model_non_embed_param': model.count_parameters()[1],
         'stat_dataset_len': len(dataset),
         'stat_batch_token': config.trainer.batch_size * config.trainer.seqlen,
         'stat_epochs': config.trainer.batch_size * config.trainer.seqlen * config.trainer.tot_steps / len(dataset)
