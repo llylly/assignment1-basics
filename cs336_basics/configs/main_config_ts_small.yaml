@@ -7,7 +7,7 @@
     "batch_size": 16,
     "tot_steps": 66000,
     "warmup_steps": 500,
-    "cooldown_steps": 9500,
+    "cooldown_steps": 500,
     "learning_rate": 0.0001,
     "cooldown_learning_rate": 0.00001,
     "seqlen": 512,

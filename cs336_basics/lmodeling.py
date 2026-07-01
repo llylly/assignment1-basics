@@ -4,6 +4,8 @@ import torch
 from torch import nn
 from einops import rearrange, einsum
 
+INF_MIN = -1e+20
+
 class LLinear(torch.nn.Module):
 
     def __init__(self, in_features: int, out_features: int, device: torch.device | None = None, dtype: torch.dtype | None=None):
@@ -24,8 +26,12 @@ class LEmbedding(torch.nn.Module):
         nn.init.trunc_normal_(W_embed, mean=0., std=1., a=-3., b=3.)
         self.weight = nn.Parameter(W_embed)
     
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        return self.weight[token_ids]
+    def forward(self, token_ids: torch.Tensor, clamp_pad: bool=False) -> torch.Tensor:
+        # to prevent negative ids from pad, assign those ids a 0
+        if clamp_pad:
+            return self.weight[token_ids.clamp_min(0)]
+        else:
+            return self.weight[token_ids]
 
 class LRMSNorm(torch.nn.Module):
 
@@ -71,8 +77,8 @@ class LROPE(torch.nn.Module):
         self.max_seq_len = max_seq_len
         bases = torch.pow(torch.tensor(theta, device=device, dtype=torch.float32), -(torch.arange(1, d_k // 2 + 1, device=device, dtype=torch.float32) * 2 - 2) / d_k)
         angles = einsum(torch.arange(0, max_seq_len, device=device, dtype=torch.float32), bases, "seq_len, bases -> seq_len bases")
-        sin_angles = torch.sin(angles)
-        cos_angles = torch.cos(angles)
+        sin_angles = torch.sin(angles) # [L, d_k / 2]
+        cos_angles = torch.cos(angles) # [L, d_k / 2]
         self.register_buffer('sin_angles', sin_angles)
         self.register_buffer('cos_angles', cos_angles)
     
@@ -93,11 +99,15 @@ def LSoftmax(x: torch.Tensor, dim: int) -> torch.Tensor:
     t = torch.exp(x - rowmax)
     return t / t.sum(dim=dim, keepdim=True)
 
-def LNaiveSDPA(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+def LNaiveSDPA(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None) -> torch.Tensor:
     QK = einsum(Q, K, '... queries d, ... keys d -> queries keys ...') / math.sqrt(Q.shape[-1])
     mask = rearrange(mask, '... queries keys -> queries keys ...')
     if mask is not None:
-        QK[~mask] = -torch.inf
+        QK[~mask] = INF_MIN
+    if padded_tokens is not None:
+        QK = rearrange(QK, 'queries keys batch d_head -> batch keys queries d_head')
+        QK[padded_tokens] = INF_MIN
+        QK = rearrange(QK, 'batch keys queries d_head -> queries keys batch d_head')
     return einsum(LSoftmax(QK, dim=1), V, 'queries keys ..., ... keys d -> ... queries d')
 
 class LMHA(torch.nn.Module):
@@ -121,21 +131,51 @@ class LMHA(torch.nn.Module):
         if max_seq_len not in self.triu_cache:
             self.triu_cache[max_seq_len] = torch.triu(torch.ones((max_seq_len, max_seq_len), dtype=torch.bool, device=device)).T
     
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
-        q = rearrange(self.q_proj(x), '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
-        k = rearrange(self.k_proj(x), '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
-        v = rearrange(self.v_proj(x), '... seqlen (h d_k) -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k)
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        if kv_cache is not None:
+            # using kv cache
+            # another latent assumption: if using kv cache, we only compute the last token's output; in the output, other token places are zeros as placeholders...
+            k_cache, v_cache = kv_cache # [B, L-1, D_M]
+            assert tuple(k_cache.shape) == (x.shape[0], x.shape[1]-1, x.shape[2])
+            assert tuple(v_cache.shape) == (x.shape[0], x.shape[1]-1, x.shape[2])
+            new_k = self.k_proj(x[:, -1:]) # [B, 1, D_M]
+            new_v = self.v_proj(x[:, -1:]) # [B, 1, D_M]
+            k = torch.concat([k_cache, new_k], dim=1) # [B, L, D_M]
+            v = torch.concat([v_cache, new_v], dim=1) # [B, L, D_M]
+            q = self.q_proj(x[:, -1:]) # [B, 1, D_M]
+        else:
+            # not using kv cache
+            k = self.k_proj(x)
+            v = self.v_proj(x)
+            q = self.q_proj(x)
+        q = rearrange(q, '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
+        kk = rearrange(k, '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
+        vv = rearrange(v, '... seqlen (h d_k) -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k)
         if self.theta and LMHA.rope_cache:
             if token_positions is not None:
                 token_positions = token_positions.unsqueeze(-1) # add head dim
             else:
-                token_positions = torch.arange(q.shape[-3]).view(-1, 1) # default index for x
-            q = LMHA.rope_cache(q, token_positions)
-            k = LMHA.rope_cache(k, token_positions)
-        q = rearrange(q, '... seqlen h d_k -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k)
-        k = rearrange(k, '... seqlen h d_k -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k)
-        before_proj = rearrange(LNaiveSDPA(q, k, v, self.triu_cache[self.max_seq_len][:q.shape[-2], :q.shape[-2]]), '... h seqlen d_k -> ... seqlen (h d_k)')
-        return self.output_proj(before_proj)
+                token_positions = torch.arange(x.shape[1]).view(-1, 1) # default index for x
+            if kv_cache is not None:
+                # by latent assumption, q is of shape [B, 1, D_M]
+                q = LMHA.rope_cache(q, token_positions[:, -1:])
+            else:
+                q = LMHA.rope_cache(q, token_positions)
+            kk = LMHA.rope_cache(kk, token_positions)
+        q = rearrange(q, '... seqlen h d_k -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k) # [B, H, 1, D_K] or [B, H, L, D_K]
+        kk = rearrange(kk, '... seqlen h d_k -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k) # [B, H, L, D_K]
+        if kv_cache is not None:
+            # by latent assumption, q is of shape [B, 1, D_M] pointing to the last token place
+            before_proj = LNaiveSDPA(q, kk, vv, self.triu_cache[self.max_seq_len][x.shape[1]-1: x.shape[1], :x.shape[1]], padded_tokens)
+        else:
+            before_proj = LNaiveSDPA(q, kk, vv, self.triu_cache[self.max_seq_len][:x.shape[1], :x.shape[1]], padded_tokens)
+        before_proj = rearrange(before_proj, '... h seqlen d_k -> ... seqlen (h d_k)') # [B, L, D_M] or [B, 1, D_M]
+        output = self.output_proj(before_proj)
+        if kv_cache is not None:
+            # by latent assumption, need to add dummy output
+            dummy = torch.zeros((output.shape[0], x.shape[1]-1, output.shape[2]), dtype=output.dtype, device=output.device)
+            output = torch.concat([dummy, output], dim=1)
+        return output, (k, v)
 
 class LTransformerBlock(torch.nn.Module):
 
@@ -147,9 +187,11 @@ class LTransformerBlock(torch.nn.Module):
         self.ln2 = LRMSNorm(d_model, device=device, dtype=dtype)
         self.ffn = LFFN(d_model, d_ff, device, dtype)
     
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
-        t = x + self.attn(self.ln1(x), token_positions)
-        return t + self.ffn(self.ln2(t))
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
+        # padded_tokens: torch.bool [B, T]
+        attn_x, kv_cache = self.attn(self.ln1(x), token_positions, padded_tokens, kv_cache)
+        t = x + attn_x
+        return t + self.ffn(self.ln2(t)), kv_cache
 
 class LTransformerLM(torch.nn.Module):
 
@@ -165,11 +207,30 @@ class LTransformerLM(torch.nn.Module):
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
         x = self.token_embeddings(x)
+        kv_caches = []
         for layer in self.layers:
-            x = layer(x, token_positions)
+            x, kv = layer(x, token_positions)
+            kv_caches.append(kv)
         x = self.ln_final(x)
         x = self.lm_head(x)
-        return x
+        return x # discard kv cache for now
+
+    def batch_generate(self, x: torch.Tensor, kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None, pad_token_id: int | None = None):
+        # changes to kv cache is in place
+        padded_tokens = (x == pad_token_id)
+        token_positions = (torch.cumsum(x != pad_token_id, dim=1) - 1).clamp(min=0)
+        x = self.token_embeddings(x, clamp_pad=pad_token_id is not None)
+        new_kv_cache = []
+        for i, layer in enumerate(self.layers):
+            # print('layer', i)
+            if kv_cache is not None:
+                x, new_layer_kvcache = layer(x, token_positions, padded_tokens, kv_cache[i])
+            else:
+                x, new_layer_kvcache = layer(x, token_positions, padded_tokens)
+            new_kv_cache.append(new_layer_kvcache)
+        x = self.ln_final(x)
+        x = self.lm_head(x)
+        return x, new_kv_cache
     
     def resource_count(self, batch_size, seq_len):
         tot_params = 0
@@ -284,14 +345,14 @@ if __name__ == '__main__':
     with open('cs336_basics/configs/models/gpt2_small.yaml', 'r') as f:
         gpt2_small_model_config = yaml.safe_load(f)
 
-    # config = gpt2_small_model_config
-    config = gpt2_xl_model_config
+    config = gpt2_small_model_config
+    # config = gpt2_xl_model_config
     config |= {
         'dtype': torch.bfloat16,
         'device': 'cuda'
     }
 
     lm = LTransformerLM(**config)
-    lm.resource_count(batch_size=8, seq_len=1024)
+    lm.resource_count(batch_size=16, seq_len=512)
     # lm.resource_count(batch_size=1024, seq_len=1)
 

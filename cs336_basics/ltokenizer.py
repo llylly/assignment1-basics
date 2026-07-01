@@ -1,6 +1,7 @@
 from typing import Iterator, Iterable
 from dataclasses import dataclass
 import os
+import sys
 import regex as re
 from multiprocessing import Pool
 import heapq
@@ -280,8 +281,13 @@ class LTokenizer:
     def encode(self, text: str) -> list[int]:
         chunks = []
         st = 0
+        if len(text) > 1000:
+            # output tokenizing progress
+            f = sys.stdout
+        else:
+            f = open(os.devnull, 'w')
         if self.special_tokens:
-            with tqdm(desc='strip special tokens', total=len(text)) as pbar:
+            with tqdm(desc='strip special tokens', total=len(text), file=f) as pbar:
                 while True:
                     min_p, min_tok = len(text) + 1, None
                     for spec_tok in self.special_tokens:
@@ -303,9 +309,9 @@ class LTokenizer:
         # encode and cache in the mean time
         ans = []
 
-        with tqdm(unit=' unique words', desc='tokenizing') as pbar:
-            with tqdm(unit=' total words', desc='tokenizing') as ppbar:
-                with tqdm(unit=' total tokens', desc='tokenizing') as pppbar:
+        with tqdm(unit=' unique words', desc='tokenizing', file=f) as pbar:
+            with tqdm(unit=' total words', desc='tokenizing', file=f) as ppbar:
+                with tqdm(unit=' total tokens', desc='tokenizing', file=f) as pppbar:
                     for textt in chunks:
                         if self.special_tokens and any([textt == spec_tok for spec_tok in self.special_tokens]):
                             ans.append(self.inv_vocab[textt.encode('utf-8')])
@@ -326,8 +332,8 @@ class LTokenizer:
                             ppbar.update(1)
         
         bytelen = len(text.encode('utf-8'))
-        print('total bytes:', bytelen, 'total tokens:', pppbar.n)
-        if pppbar.n > 0: print('compression ratio:', bytelen / pppbar.n)
+        print('total bytes:', bytelen, 'total tokens:', pppbar.n, file=f)
+        if pppbar.n > 0: print('compression ratio:', bytelen / pppbar.n, file=f)
         return ans
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:

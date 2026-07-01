@@ -153,7 +153,7 @@ def run_multihead_self_attention(
     lmha.k_proj.weight.data = k_proj_weight
     lmha.v_proj.weight.data = v_proj_weight
     lmha.output_proj.weight.data = o_proj_weight
-    return lmha.forward(in_features)
+    return lmha(in_features)[0]
 
 def run_multihead_self_attention_with_rope(
     d_model: int,
@@ -198,7 +198,7 @@ def run_multihead_self_attention_with_rope(
     lmha.k_proj.weight.data = k_proj_weight
     lmha.v_proj.weight.data = v_proj_weight
     lmha.output_proj.weight.data = o_proj_weight
-    return lmha.forward(in_features, token_positions)
+    return lmha(in_features, token_positions)[0]
 
 
 def run_rope(
@@ -298,7 +298,7 @@ def run_transformer_block(
     from cs336_basics.lmodeling import LTransformerBlock
     transformer_block = LTransformerBlock(d_model, num_heads, d_ff, max_seq_len, theta)
     transformer_block.load_state_dict(weights)
-    return transformer_block.forward(in_features)
+    return transformer_block(in_features)[0]
 
 
 def run_transformer_lm(

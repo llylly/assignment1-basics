@@ -46,12 +46,12 @@ class MainConfig:
     resume_path: str | None = None
     run_name: str | None = ''
     """run_name is appended to both save_path and wandb"""
-    val_step: int = 200
-    save_step: int = 600
+    val_step: int = 1000
+    save_step: int = 1000
 
 """
 Example Usage:
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small_corrected.yaml --val_step 500 --save_step 1000
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml
 """
 
 if __name__ == '__main__':
@@ -108,9 +108,10 @@ if __name__ == '__main__':
     wandb.init(project=('LLLM/' + original_save_path).replace('/', '|'), name=config.save_path.replace('/', '|'), config=asdict(config) | stats, dir=os.path.join(config.save_path, 'wandb_logs'))
 
     stime = time.time()
+    tot_token_trained = 0
     
     for now_step in tqdm(range(start_iter, config.trainer.tot_steps), desc='training'):
-        now_lr = LCosineLR(now_step, config.trainer.learning_rate, config.trainer.cooldown_learning_rate, config.trainer.warmup_steps, config.trainer.cooldown_steps)
+        now_lr = LCosineLR(now_step, config.trainer.learning_rate, config.trainer.cooldown_learning_rate, config.trainer.warmup_steps, config.trainer.tot_steps - config.trainer.cooldown_steps)
         x, y = LGetBatch(dataset, config.trainer.batch_size, config.trainer.seqlen, config.device)
         x = x.type(torch.long)
         y = y.type(torch.long)
@@ -127,10 +128,12 @@ if __name__ == '__main__':
         optimizer.step()
 
         train_loss_item = loss.item()
+        tot_token_trained += stats['stat_batch_token']
         train_info = {'train/loss': train_loss_item,
                     'train/lr': now_lr,
                     'train/grad_norm': grad_norm,
-                    'train/tokens_per_sec': (now_step - start_iter) * stats['stat_batch_token'] / (time.time() - stime)}
+                    'train/tokens_per_sec': (now_step - start_iter) * stats['stat_batch_token'] / (time.time() - stime),
+                    'train/token_trained': tot_token_trained}
         print(','.join(f'{k}: {v:.2f}' for k, v in train_info.items()))
         wandb.log(train_info, step=now_step)
         
