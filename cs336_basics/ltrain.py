@@ -59,6 +59,9 @@ uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_con
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_small.yaml --val_step 5000 --save_step 5000
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_medium.yaml --val_step 5000 --save_step 5000
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_medium.yaml --trainer.learning_rate 0.0003 --val_step 5000 --save_step 5000 --run_name lr_3e-4
+(below are after the fix)
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_small.yaml --val_step 5000 --save_step 5000
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_medium.yaml --val_step 5000 --save_step 5000
 
 Ablations on tiny training config:
 
