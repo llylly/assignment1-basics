@@ -114,6 +114,7 @@ def generate(model: LTransformerLM, prompts: list[str], tokenizer: LTokenizer,
 Example Usage:
 uv run python cs336_basics/linference.py --config_path cs336_basics/configs/gen_config_ts_small.yaml --model_path models/ts_small_corrected_20260625_18
 1530/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 0.0
+uv run python cs336_basics/linference.py --config_path cs336_basics/configs/gen_config_ts_tiny.yaml --model_path models/ts_tiny_20260701_175105/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 0.0
 """
 
 if __name__ == '__main__':

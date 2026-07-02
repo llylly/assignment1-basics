@@ -74,7 +74,13 @@ uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_con
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_nope.yaml --run_name nope
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_silu.yaml --run_name silu
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml # correction after fixing adamw bug
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.opt_type sgd --run_name sgd
+
+Still search for best lr for SGD: [ongoing]
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.opt_type sgd --run_name sgd # need much larger lr, such as 0.01
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.opt_type sgd --trainer.learning_rate 0.03 --run_name sgd_lr_3e-2 
+
+ML system optimization group: [ongoing]
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml --save_path models/speedopt_ts_small
 """
 
 if __name__ == '__main__':

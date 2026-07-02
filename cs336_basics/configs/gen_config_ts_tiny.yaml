@@ -1,0 +1,5 @@
+{
+  "tokenizer_vocab_path": "data/TinyStoriesV2-GPT4-vocab.txt",
+  "tokenizer_merges_path": "data/TinyStoriesV2-GPT4-merges.txt",
+  "model_config": "cs336_basics/configs/models/gpt2_tiny.yaml",
+}
