@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from cs336_basics.ltrain_utils import load_checkpoint, save_checkpoint, dict_to_dataclass, LGetBatch
 from cs336_basics.lmodeling import LTransformerLM
-from cs336_basics.lopt import LAdamW, LCosineLR, LCrossEntropy, LGradientClipping
+from cs336_basics.lopt import LAdamW, LSGD, LCosineLR, LCrossEntropy, LGradientClipping
 
 @dataclass
 class TrainerConfig:
@@ -29,6 +29,7 @@ class TrainerConfig:
     beta2: float = 0.99
     weight_decay: float = 0.1
     gradient_clipping: float | None = 3.0
+    opt_type: Literal['adam', 'sgd'] = 'adam'
 
 @dataclass
 class MainConfig:
@@ -64,7 +65,7 @@ uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_con
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1e-3_bs_32_len_256_step_66k 
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0015 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1.5e-3_bs_32_len_256_step_66k
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --trainer.warmup_steps 5000 --trainer.cooldown_steps 5000 --run_name lr_1e-3_bs_32_len_256_step_66k_warmup_5k_cool_5k [* best]
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --trainer.warmup_steps 5000 --trainer.cooldown_steps 5000 --trainer.weight_decay 0.2 --run_name lr_1e-3_bs_32_len_256_step_66k_warmup_5k_cool_5k_wd_0.2 [running]
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --trainer.warmup_steps 5000 --trainer.cooldown_steps 5000 --trainer.weight_decay 0.2 --run_name lr_1e-3_bs_32_len_256_step_66k_warmup_5k_cool_5k_wd_0.2 
 
 Ablations on tiny arch config (from best training config):
 
@@ -72,6 +73,8 @@ uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_con
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_post_norm.yaml --run_name post_norm
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_nope.yaml --run_name nope
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_silu.yaml --run_name silu
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml # correction after fixing adamw bug
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.opt_type sgd --run_name sgd
 """
 
 if __name__ == '__main__':
@@ -103,7 +106,10 @@ if __name__ == '__main__':
     dtype = {'bfloat16': torch.bfloat16, 'float32': torch.float}[config.dtype]
     model_config |= {'device': config.device, 'dtype': dtype}
     model = LTransformerLM(**model_config)
-    optimizer = LAdamW(model.parameters(), config.trainer.learning_rate, (config.trainer.beta1, config.trainer.beta2), config.trainer.weight_decay)
+    if config.trainer.opt_type == 'adam':
+        optimizer = LAdamW(model.parameters(), config.trainer.learning_rate, (config.trainer.beta1, config.trainer.beta2), config.trainer.weight_decay)
+    elif config.trainer.opt_type == 'sgd':
+        optimizer = LSGD(model.parameters(), config.trainer.learning_rate, config.trainer.beta1, config.trainer.weight_decay)
 
     if config.resume_path:
         start_iter = load_checkpoint(config.resume_path, model, optimizer)
