@@ -3,6 +3,12 @@ from typing import Any
 import torch
 from torch import nn
 from einops import rearrange, einsum
+from contextlib import nullcontext
+import torch.cuda.nvtx as nvtx
+
+use_nvtx = True
+
+range_ctx = nvtx.range if use_nvtx else lambda _: nullcontext()
 
 INF_MIN = -1e+20
 
@@ -16,7 +22,9 @@ class LLinear(torch.nn.Module):
         self.weight = nn.Parameter(W_tensor)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x @ self.weight.T
+        with range_ctx("Linear"):
+            ret = x @ self.weight.T
+        return ret
 
 class LEmbedding(torch.nn.Module):
 
@@ -51,9 +59,10 @@ class LRMSNorm(torch.nn.Module):
 
 class LFFN(torch.nn.Module):
 
-    def __init__(self, d_model: int, d_ff: int, device: torch.device | None = None, dtype: torch.dtype | None = None, silu: bool = False):
+    def __init__(self, d_model: int, d_ff: int, device: torch.device | None = None, dtype: torch.dtype | None = None, silu: bool = False, custom_kernel: bool = True):
         super().__init__()
         self.silu = silu
+        self.custom_kernel = custom_kernel
         self.d_model, self.d_ff = d_model, d_ff # use passed in arg
         # if d_model % 24 == 0:
         #     self.d_ff = d_model * 8 // 3
@@ -65,13 +74,23 @@ class LFFN(torch.nn.Module):
             self.w3 = LLinear(self.d_model, self.d_ff, device, dtype)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not self.silu:
-            t1 = self.w1(x)
-            t3 = self.w3(x)
-            return self.w2(torch.sigmoid(t1) * t1 * t3)
+        if not self.custom_kernel:
+            if not self.silu:
+                t1 = self.w1(x)
+                t3 = self.w3(x)
+                return self.w2(torch.sigmoid(t1) * t1 * t3)
+            else:
+                t1 = self.w1(x)
+                return self.w2(torch.sigmoid(t1) * t1)
         else:
-            t1 = self.w1(x)
-            return self.w2(torch.sigmoid(t1) * t1)
+            from cs336_systems.laccelerate import LSiLUFunc
+            if not self.silu:
+                t1 = self.w1(x)
+                t3 = self.w3(x)
+                return self.w2(LSiLUFunc.apply(t1) * t3)
+            else:
+                t1 = self.w1(x)
+                return self.w2(LSiLUFunc.apply(t1))
 
 class LROPE(torch.nn.Module):
 
@@ -89,15 +108,22 @@ class LROPE(torch.nn.Module):
         self.register_buffer('cos_angles', cos_angles)
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
-        x_even = x.view(-1, self.d_k)[:,::2].view(list(x.shape[:-1]) + [self.d_k // 2])
-        x_odd = x.view(-1, self.d_k)[:,1::2].view(list(x.shape[:-1]) + [self.d_k // 2])
+        if True:
+            x_even = x.view(-1, self.d_k)[:,::2].view(list(x.shape[:-1]) + [self.d_k // 2])
+            x_odd = x.view(-1, self.d_k)[:,1::2].view(list(x.shape[:-1]) + [self.d_k // 2])
+        else:
+            x_even = x.view(-1, self.d_k)[:,:self.d_k // 2].view(list(x.shape[:-1]) + [self.d_k // 2]) # whether to permute indexes to achieve a faster implementation, appears to be not critical
+            x_odd = x.view(-1, self.d_k)[:,self.d_k // 2:].view(list(x.shape[:-1]) + [self.d_k // 2])
         cos_even_x = self.cos_angles[token_positions].to(x.dtype) * x_even
         cos_odd_x = self.cos_angles[token_positions].to(x.dtype) * x_odd
         nsin_odd_x = -self.sin_angles[token_positions].to(x.dtype) * x_odd
         sin_even_x = self.sin_angles[token_positions].to(x.dtype) * x_even
         ans_even = cos_even_x + nsin_odd_x
         ans_odd = cos_odd_x + sin_even_x
-        ans = torch.stack([ans_even, ans_odd], dim=-1).contiguous().reshape(x.shape)
+        if True:
+            ans = torch.stack([ans_even, ans_odd], dim=-1).contiguous().reshape(x.shape)
+        else:
+            ans = torch.concat([ans_even, ans_odd], dim=-1).contiguous().reshape(x.shape)
         return ans
 
 def LSoftmax(x: torch.Tensor, dim: int) -> torch.Tensor:
@@ -105,16 +131,29 @@ def LSoftmax(x: torch.Tensor, dim: int) -> torch.Tensor:
     t = torch.exp(x - rowmax)
     return t / t.sum(dim=dim, keepdim=True)
 
+@nvtx.range("SDPA")
 def LNaiveSDPA(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None) -> torch.Tensor:
-    QK = einsum(Q, K, '... queries d, ... keys d -> queries keys ...') / math.sqrt(Q.shape[-1])
-    mask = rearrange(mask, '... queries keys -> queries keys ...')
-    if mask is not None:
-        QK[~mask] = INF_MIN
-    if padded_tokens is not None:
-        QK = rearrange(QK, 'queries keys batch d_head -> batch keys queries d_head')
-        QK[padded_tokens] = INF_MIN
-        QK = rearrange(QK, 'batch keys queries d_head -> queries keys batch d_head')
-    return einsum(LSoftmax(QK, dim=1), V, 'queries keys ..., ... keys d -> ... queries d')
+    with range_ctx("SDPA Attention Score"):
+        QK = einsum(Q, K, '... queries d, ... keys d -> ... queries keys') / math.sqrt(Q.shape[-1])
+    
+    with range_ctx("SDPA Masking"):
+        
+        with range_ctx("SDPA Masking Causal"):
+            if mask is not None:
+                QK += (~mask) * INF_MIN
+                # QK[~mask] = INF_MIN
+        
+        with range_ctx("SDPA Masking Context"):
+            if padded_tokens is not None:
+                QK = rearrange(QK, 'batch d_head queries keys -> queries d_head batch keys')
+                QK += padded_tokens * INF_MIN
+                # QK[padded_tokens] = INF_MIN
+                QK = rearrange(QK, 'queries d_head batch keys -> batch d_head queries keys')
+    
+    with range_ctx("SDPA Softmax and V"):
+        ret = einsum(LSoftmax(QK, dim=3), V, '... queries keys , ... keys d -> ... queries d')
+
+    return ret
 
 class LMHA(torch.nn.Module):
     # global singleton
@@ -187,17 +226,35 @@ class LMHA(torch.nn.Module):
 
 class LTransformerBlock(torch.nn.Module):
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, no_rms_norm: bool = False, post_norm: bool = False, nope: bool = False, silu: bool = False) -> None:
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, no_rms_norm: bool = False, post_norm: bool = False, nope: bool = False, silu: bool = False, compile: bool = True, custom_kernel: bool = False) -> None:
         super().__init__()
         self.no_rms_norm = no_rms_norm
         self.post_norm = post_norm
         self.nope = nope
         self.d_model = d_model
 
-        self.ln1 = LRMSNorm(d_model, device=device, dtype=dtype) if not no_rms_norm else None
+        assert not (compile and custom_kernel), "Cannot use both compile and custom_kernel!"
+
+        if no_rms_norm:
+            self.ln1 = self.ln2 = None
+        else:
+            if not custom_kernel:
+                self.ln1 = LRMSNorm(d_model, device=device, dtype=dtype)
+                self.ln2 = LRMSNorm(d_model, device=device, dtype=dtype)
+            else:
+                # use custom kernel LRMSNorm - slower than torch.compile :(
+                from cs336_systems.laccelerate import LRMSNormFast
+                self.ln1 = LRMSNormFast(d_model, device=device, dtype=dtype)
+                self.ln2 = LRMSNormFast(d_model, device=device, dtype=dtype)
+
         self.attn = LMHA(d_model, num_heads, max_seq_len, theta, device, dtype, nope)
-        self.ln2 = LRMSNorm(d_model, device=device, dtype=dtype) if not no_rms_norm else None
         self.ffn = LFFN(d_model, d_ff, device, dtype, silu=silu)
+
+        if self.ln1 and self.ln2 and compile:
+            self.ln1 = torch.compile(self.ln1)
+            self.ln2 = torch.compile(self.ln2)
+        if compile:
+            self.attn = torch.compile(self.attn)
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
         # padded_tokens: torch.bool [B, T]

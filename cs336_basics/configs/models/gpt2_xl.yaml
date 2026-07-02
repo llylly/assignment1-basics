@@ -1,8 +1,8 @@
 {
-    'num_layers': 48,
-    'd_model': 1600,
-    'num_heads': 25,
-    'd_ff': 4288, # 8/3 d_model ceil to 64
+    'num_layers': 32,
+    'd_model': 2560,
+    'num_heads': 32,
+    'd_ff': 6848, # 8/3 d_model ceil to 64
     'vocab_size': 10000, #50257,
     'context_length': 4096,
     'theta': 10000,

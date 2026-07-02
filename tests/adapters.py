@@ -542,8 +542,9 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    from cs336_basics.lmodeling import LRMSNorm
-    norm = LRMSNorm(d_model, eps)
+    # from cs336_basics.lmodeling import LRMSNorm
+    from cs336_systems.laccelerate import LRMSNormFast
+    norm = LRMSNormFast(d_model, eps)
     norm.weight.data = weights
     return norm.forward(in_features)
 
@@ -559,7 +560,8 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    return torch.sigmoid(in_features) * in_features
+    from cs336_systems.laccelerate import LSiLUFunc
+    return LSiLUFunc.apply(in_features)
 
 
 def run_get_batch(

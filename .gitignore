@@ -172,3 +172,6 @@ data/
 tmp/
 models/
 !cs336_basics/configs/models
+*.nsys-rep
+*.qdstrm
+memory_snapshot.pickle

@@ -8,7 +8,7 @@
     "tot_steps": 66000,
     "warmup_steps": 5000,
     "cooldown_steps": 5000,
-    "learning_rate": 0.001,
+    "learning_rate": 0.0005,
     "cooldown_learning_rate": 0.00001,
     "seqlen": 512,
     "beta1": 0.9,
