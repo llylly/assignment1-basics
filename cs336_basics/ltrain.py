@@ -28,6 +28,7 @@ class TrainerConfig:
     beta1: float = 0.9
     beta2: float = 0.99
     weight_decay: float = 0.1
+    accum_steps: int = 1
     gradient_clipping: float | None = 3.0
     opt_type: Literal['adam', 'sgd'] = 'adam'
 
@@ -54,6 +55,8 @@ class MainConfig:
 Example Usage:
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml --trainer.learning_rate 0.0005 --run_name lr_5e-4
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_small.yaml --val_step 5000 --save_step 5000
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_medium.yaml --val_step 5000 --save_step 5000
 
 Ablations on tiny training config:
 
@@ -155,11 +158,13 @@ if __name__ == '__main__':
         # update learning rate according to cosine scheduler
         for param_group in optimizer.param_groups:
             param_group['lr'] = now_lr
-        optimizer.zero_grad()
+        if now_step % config.trainer.accum_steps == 0:
+            optimizer.zero_grad()
         loss.backward()
-        if config.trainer.gradient_clipping is not None:
-            grad_norm = LGradientClipping(model.parameters(), config.trainer.gradient_clipping)
-        optimizer.step()
+        if now_step % config.trainer.accum_steps == 0:
+            if config.trainer.gradient_clipping is not None:
+                grad_norm = LGradientClipping(model.parameters(), config.trainer.gradient_clipping)
+            optimizer.step()
 
         train_loss_item = loss.item()
         tot_token_trained += stats['stat_batch_token']

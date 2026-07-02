@@ -1,0 +1,10 @@
+# 134M
+{
+    'num_layers': 12,
+    'd_model': 768,
+    'num_heads': 12,
+    'd_ff': 2048,
+    'vocab_size': 32000, #50257,
+    'context_length': 4096,
+    'theta': 10000,
+}

@@ -1,0 +1,19 @@
+{
+  "model_config": "cs336_basics/configs/models/gpt2_small_owt.yaml",
+  "data": "data/owt_train.tokenized.npy",
+  "val_data": "data/owt_valid.tokenized.npy",
+  "save_path": "models/owt_small",
+  "trainer": {
+    "batch_size": 32,
+    "accum_steps": 2,
+    "tot_steps": 330000,
+    "warmup_steps": 5000,
+    "cooldown_steps": 5000,
+    "learning_rate": 0.0005,
+    "cooldown_learning_rate": 0.00001,
+    "seqlen": 512,
+    "beta1": 0.9,
+    "beta2": 0.99,
+    "weight_decay": 0.1
+  }
+}
