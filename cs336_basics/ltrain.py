@@ -55,8 +55,10 @@ class MainConfig:
 Example Usage:
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml --trainer.learning_rate 0.0005 --run_name lr_5e-4
+(below are prior to the fix)
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_small.yaml --val_step 5000 --save_step 5000
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_medium.yaml --val_step 5000 --save_step 5000
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_medium.yaml --trainer.learning_rate 0.0003 --val_step 5000 --save_step 5000 --run_name lr_3e-4
 
 Ablations on tiny training config:
 
@@ -160,7 +162,7 @@ if __name__ == '__main__':
             param_group['lr'] = now_lr
         if now_step % config.trainer.accum_steps == 0:
             optimizer.zero_grad()
-        loss.backward()
+        (loss / config.trainer.accum_steps).backward() # critical fix
         if now_step % config.trainer.accum_steps == 0:
             if config.trainer.gradient_clipping is not None:
                 grad_norm = LGradientClipping(model.parameters(), config.trainer.gradient_clipping)
