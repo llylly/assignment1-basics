@@ -71,6 +71,7 @@ Ablations on tiny arch config (from best training config):
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_no_rms_norm.yaml --run_name no_rms_norm
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_post_norm.yaml --run_name post_norm
 uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_nope.yaml --run_name nope
+uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_silu.yaml --run_name silu
 """
 
 if __name__ == '__main__':
