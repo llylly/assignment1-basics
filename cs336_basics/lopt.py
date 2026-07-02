@@ -32,6 +32,29 @@ class LSqaureRootSGD(torch.optim.Optimizer):
                 state['t'] = t+1
         return loss
 
+class LSGD(torch.optim.Optimizer):
+
+    def __init__(self, params, lr: float, momentum: float, weight_decay: float):
+        if lr < 0 or (not 0. <= momentum <= 1.):
+            raise ValueError('Invalid hyperparameters')
+        defaults = {'lr': lr, 'momentum': momentum, 'weight_decay': weight_decay, 'mementum_pow': 1.}
+        super().__init__(params, defaults)
+        for group in self.param_groups:
+            for p in group['params']:
+                self.state[p]['m'] = torch.zeros_like(p)
+    
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            lr, momentum, weight_decay = group['lr'], group['momentum'], group['weight_decay']
+            group['momentum_pow'] *= momentum
+            for p in group['params']:
+                if p.grad is None: continue
+                state = self.state[p]
+                state['m'] = momentum * state['m'] + (1. - momentum) * p.grad.data
+                p.data = p.data - lr * weight_decay * p.data - lr * state['m'] / (1. - group['momentum_pow'])
+        return loss
+
 class LAdamW(torch.optim.Optimizer):
 
     def __init__(self, params, lr: float, betas: tuple[float, float], weight_decay: float, eps: float=1e-8):
@@ -49,13 +72,13 @@ class LAdamW(torch.optim.Optimizer):
         loss = None if closure is None else closure()
         for group in self.param_groups:
             lr, beta1, beta2, weight_decay, epsilon = group['lr'], group['beta1'], group['beta2'], group['weight_decay'], group['epsilon']
+            group['beta1pow'] *= beta1
+            group['beta2pow'] *= beta2
             for p in group['params']:
                 if p.grad is None: continue
                 state = self.state[p]
                 state['m'] = beta1 * state['m'] + (1. - beta1) * p.grad.data
                 state['v'] = beta2 * state['v'] + (1. - beta2) * p.grad.data * p.grad.data
-                group['beta1pow'] *= beta1
-                group['beta2pow'] *= beta2
                 p.data = p.data - lr * weight_decay * p.data - lr * math.sqrt(1. - group['beta2pow']) / (1. - group['beta1pow']) * state['m'] / (torch.sqrt(state['v']) + epsilon)
         return loss
 
