@@ -37,7 +37,7 @@ class LSGD(torch.optim.Optimizer):
     def __init__(self, params, lr: float, momentum: float, weight_decay: float):
         if lr < 0 or (not 0. <= momentum <= 1.):
             raise ValueError('Invalid hyperparameters')
-        defaults = {'lr': lr, 'momentum': momentum, 'weight_decay': weight_decay, 'mementum_pow': 1.}
+        defaults = {'lr': lr, 'momentum': momentum, 'weight_decay': weight_decay, 'momentum_pow': 1.}
         super().__init__(params, defaults)
         for group in self.param_groups:
             for p in group['params']:
