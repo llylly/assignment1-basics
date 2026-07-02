@@ -2,6 +2,7 @@ import os
 import pickle
 from pathlib import Path
 
+from typing import TypeVar
 import numpy as np
 import pytest
 import torch
@@ -10,6 +11,11 @@ from torch import Tensor
 
 class DEFAULT:
     pass
+
+def pytest_addoption(parser):
+    parser.addoption("--snapshot-exact", action="store_true", help="Use exact matching standards for snapshot matching")
+
+_A = TypeVar("_A", np.ndarray, Tensor)
 
 
 def _canonicalize_array[A: (np.ndarray, Tensor)](arr: A) -> np.ndarray:
@@ -160,7 +166,21 @@ def snapshot(request):
     force_update = False
 
     # Create the snapshot handler with default settings
-    snapshot_handler = Snapshot(default_force_update=force_update, default_test_name=request.node.name)
+    snapshot_handler = Snapshot()
+
+    # Patch the assert_match method to include the update flag by default
+    original_assert_match = snapshot_handler.assert_match
+
+    def patched_assert_match(actual, test_name=None, force_update=force_update):
+        # If test_name is not provided, use the test function name
+        if test_name is None:
+            test_name = request.node.name
+        return original_assert_match(actual, test_name=test_name, force_update=force_update)
+
+    snapshot_handler.assert_match = patched_assert_match
+
+    # # Create the snapshot handler with default settings
+    # snapshot_handler = Snapshot(default_force_update=force_update, default_test_name=request.node.name)
 
     return snapshot_handler
 
@@ -181,9 +201,25 @@ def numpy_snapshot(request):
     match_exact = request.config.getoption("--snapshot-exact", default=False)
 
     # Create the snapshot handler with default settings
-    snapshot = NumpySnapshot(
-        default_force_update=force_update, always_match_exact=match_exact, default_test_name=request.node.name
-    )
+    snapshot = NumpySnapshot()
+
+    # Patch the assert_match method to include the update flag by default
+    original_assert_match = snapshot.assert_match
+
+    def patched_assert_match(actual, test_name=None, force_update=force_update, rtol=1e-4, atol=1e-2):
+        # If test_name is not provided, use the test function name
+        if test_name is None:
+            test_name = request.node.name
+        if match_exact:
+            rtol = atol = 0
+        return original_assert_match(actual, test_name=test_name, force_update=force_update, rtol=rtol, atol=atol)
+
+    snapshot.assert_match = patched_assert_match
+    
+    # # Create the snapshot handler with default settings
+    # snapshot = NumpySnapshot(
+    #     default_force_update=force_update, always_match_exact=match_exact, default_test_name=request.node.name
+    # )
 
     return snapshot
 

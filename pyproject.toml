@@ -22,6 +22,9 @@ dependencies = [
     "py-spy>=0.4.2",
     "pyyaml>=6.0.3",
     "tyro>=1.0.15",
+    "humanfriendly",
+    "matplotlib",
+    "pandas>=2",
 ]
 
 [build-system]
@@ -40,6 +43,11 @@ python-preference = "managed"
 log_cli = true
 log_cli_level = "WARNING"
 addopts = "-s"
+filterwarnings = [
+    "ignore::DeprecationWarning:torch.jit.*",
+    "ignore:Attempting to run cuBLAS:UserWarning",
+    "ignore:TensorFloat32:UserWarning",
+]
 
 [tool.ruff]
 line-length = 120
