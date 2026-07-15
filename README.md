@@ -1,3 +1,15 @@
+# Linyi's Change
+
+Now it's a more general codebase.
+
+Now working on:
+[ ] Support loading open-source models
+
+TODO:
+[ ] Support Muon optimizer 
+[ ] Implement Triton kernel for attention
+[ ] Distributed training
+
 # CS336 Spring 2025 Assignment 1: Basics
 
 For a full description of the assignment, see the assignment handout at
