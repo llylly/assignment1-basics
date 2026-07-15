@@ -1,20 +1,20 @@
 [project]
 name = "cs336_basics"
 version = "26.0.0"
-description = "CS336 Assignment 1"
+description = "CS336 Assignment 1,2,5"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "einops>=0.8",      # tensor operations
     "einx>=0.4",        # more general tensor operations
     "jaxtyping>=0.3",   # type hints for pytorch/jax/numpy
-    "numpy>=2.4",
+    # "numpy>=2.4",
     "psutil>=7",
     "pytest>=9.0",
     "pytest-timeout",
     "regex>=2026.3.32", # more powerful regex than the builtin `re` module
     "tiktoken>=0.12.0",
-    "torch~=2.11.0",
+    "torch~=2.10.0",
     "tqdm>=4.67",
     "wandb>=0.25",
     "ty>=0.0.26",
@@ -25,6 +25,27 @@ dependencies = [
     "humanfriendly",
     "matplotlib",
     "pandas>=2",
+    "accelerate>=1.5.2",
+    "math-verify[antlr4-13-2]>=0.7.0",
+    "modal>=1.1.0",
+    "pylatexenc>=2.10",
+    "transformers>=4.50.0",
+    "typer>=0.15.4",
+    "xopen>=2.0.2",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "alpaca-eval>=0.6.6",
+    # No official flash-attn 2.8.3 wheel exists for Torch 2.10; use the
+    # community cp312/cu12/Torch 2.10 wheel to avoid source builds on Modal.
+    "flash-attn @ https://github.com/lesj0610/flash-attention/releases/download/v2.8.3-cu12-torch2.10-cp312/flash_attn-2.8.3%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch",
+    "vllm==0.19.1",
+    "wandb>=0.26.0",
+]
+plots = [
+    "wandb>=0.26.0",
 ]
 
 [build-system]
@@ -32,12 +53,25 @@ requires = ["uv_build>=0.11.0,<0.12.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "cs336_basics"
+module-name = "basics"
 module-root = ""
 
 [tool.uv]
 package = true
 python-preference = "managed"
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu129", extra = "gpu", marker = "sys_platform == 'linux'" },
+]
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
 
 [tool.pytest.ini_options]
 log_cli = true

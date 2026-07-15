@@ -7,7 +7,12 @@ import numpy as np
 import pytest
 import torch
 from torch import Tensor
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Whitespace
+from transformers import AutoModelForCausalLM, GPT2Config, GPT2LMHeadModel, PreTrainedTokenizerFast
 
+from .common import FIXTURES_PATH
 
 class DEFAULT:
     pass
@@ -244,6 +249,7 @@ def n_layers():
     return 3
 
 
+# For assignment 1/2
 @pytest.fixture
 def vocab_size():
     return 10_000
@@ -364,3 +370,217 @@ def pos_ids(n_queries):
 
 # def test_state_dict(ts_state_dict):
 #     print(ts_state_dict)
+
+
+
+@pytest.fixture
+def prompt_strs():
+    return [
+        "Hello, world!",
+        "This is a test.",
+        "This is another test.",
+    ]
+
+
+@pytest.fixture
+def output_strs():
+    return [
+        "Hello, world!",
+        "This is a test.",
+        "This is another test.",
+    ]
+
+
+@pytest.fixture
+def model_id():
+    return FIXTURES_PATH / "tiny-gpt2"
+
+
+@pytest.fixture
+def tokenizer():
+    vocab = {
+        "<pad>": 0,
+        "<eos>": 1,
+        "<unk>": 2,
+        "Hello": 3,
+        "world": 4,
+        "This": 5,
+        "is": 6,
+        "a": 7,
+        "test": 8,
+        "another": 9,
+        "Question": 10,
+        "Answer": 11,
+        "Instruction": 12,
+        "Response": 13,
+        "###": 14,
+    }
+    word_tokenizer = Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>"))
+    word_tokenizer.pre_tokenizer = Whitespace()
+    return PreTrainedTokenizerFast(
+        tokenizer_object=word_tokenizer,
+        pad_token="<pad>",
+        eos_token="<eos>",
+        unk_token="<unk>",
+    )
+
+
+@pytest.fixture
+def model(model_id):
+    return AutoModelForCausalLM.from_pretrained(model_id)
+
+
+@pytest.fixture
+def tiny_train_model(tokenizer):
+    torch.manual_seed(0)
+    config = GPT2Config(
+        vocab_size=len(tokenizer),
+        n_positions=16,
+        n_ctx=16,
+        n_embd=8,
+        n_layer=1,
+        n_head=2,
+        n_inner=16,
+        resid_pdrop=0.0,
+        embd_pdrop=0.0,
+        attn_pdrop=0.0,
+        use_cache=False,
+        bos_token_id=tokenizer.eos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.pad_token_id,
+    )
+    model = GPT2LMHeadModel(config)
+    model.train()
+    return model.cpu()
+
+
+@pytest.fixture
+def reward_fn():
+    def dummy_reward_fn(response, ground_truth):
+        # Use SHA-256 which is deterministic
+        response_hash = int(hashlib.sha256(response.encode()).hexdigest(), 16)
+        reward = (response_hash % 10) / 10.0
+        return {
+            "reward": reward,
+            "format_reward": reward,
+            "answer_reward": reward,
+        }
+
+    return dummy_reward_fn
+
+
+@pytest.fixture
+def num_rollout_responses():
+    return 8
+
+
+@pytest.fixture
+def group_size(num_rollout_responses):
+    return int(num_rollout_responses / 2)
+
+
+@pytest.fixture
+def rollout_responses(num_rollout_responses):
+    return [f"hmm I think ths answer is {i}" for i in range(num_rollout_responses)]
+
+
+@pytest.fixture
+def repeated_ground_truths(num_rollout_responses):
+    return ["42"] * num_rollout_responses
+
+
+@pytest.fixture
+def advantage_eps():
+    return 1e-6
+
+
+@pytest.fixture
+def seq_length():
+    return 10
+
+# For assignment 5
+@pytest.fixture
+def vocab_size2():
+    return 100
+
+@pytest.fixture
+def batch_size2():
+    return 2
+
+
+@pytest.fixture
+def logits(batch_size2, seq_length, vocab_size2):
+    torch.manual_seed(42)
+    return torch.randn(size=(batch_size2, seq_length, vocab_size2))
+
+
+@pytest.fixture
+def input_ids(batch_size2, seq_length, vocab_size2):
+    torch.manual_seed(42)
+    return torch.randint(0, vocab_size2, size=(batch_size2, seq_length))
+
+
+@pytest.fixture
+def labels(input_ids):
+    last_tokens = torch.zeros(size=(input_ids.shape[0], 1), dtype=input_ids.dtype)
+    return torch.cat([input_ids[:, 1:], last_tokens], dim=1)
+
+
+@pytest.fixture
+def raw_rewards_or_advantages(batch_size2):
+    torch.manual_seed(42)
+    return torch.rand(size=(batch_size2, 1))
+
+
+@pytest.fixture
+def policy_log_probs(batch_size2, seq_length):
+    torch.manual_seed(42)
+    return torch.randn(size=(batch_size2, seq_length))
+
+
+@pytest.fixture
+def old_log_probs(policy_log_probs):
+    torch.manual_seed(42)
+    return policy_log_probs + torch.randn_like(policy_log_probs)
+
+
+@pytest.fixture
+def advantages(raw_rewards_or_advantages):
+    return raw_rewards_or_advantages - torch.mean(raw_rewards_or_advantages, dim=0)
+
+
+@pytest.fixture
+def raw_rewards(raw_rewards_or_advantages):
+    return raw_rewards_or_advantages
+
+
+@pytest.fixture
+def tensor(logits):
+    return logits
+
+
+@pytest.fixture
+def mask2(tensor):
+    torch.manual_seed(42)
+    return torch.rand_like(tensor) > 0.5
+
+
+@pytest.fixture
+def response_mask(policy_log_probs):
+    torch.manual_seed(42)
+    return torch.rand_like(policy_log_probs) > 0.5
+
+
+@pytest.fixture
+def gradient_accumulation_steps():
+    return 2
+
+
+@pytest.fixture
+def cliprange():
+    return 0.1
+
+
+@pytest.fixture
+def normalize_constant():
+    return 42.0
