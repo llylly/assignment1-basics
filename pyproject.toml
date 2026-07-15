@@ -43,6 +43,7 @@ gpu = [
     "torch",
     "vllm==0.19.1",
     "wandb>=0.26.0",
+    "torchaudio==2.10.0+cu129 ; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 plots = [
     "wandb>=0.26.0",
@@ -67,6 +68,9 @@ environments = [
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu129", extra = "gpu", marker = "sys_platform == 'linux'" },
+]
+torchaudio = [
+    { index = "pytorch-cu129", extra = "gpu", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
 ]
 [[tool.uv.index]]
 name = "pytorch-cu129"
