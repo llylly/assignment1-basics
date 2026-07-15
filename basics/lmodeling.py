@@ -1,5 +1,5 @@
 import math
-from typing import Any
+from typing import Any, Mapping
 import torch
 from torch import nn
 from einops import rearrange, einsum
@@ -83,7 +83,7 @@ class LFFN(torch.nn.Module):
                 t1 = self.w1(x)
                 return self.w2(torch.sigmoid(t1) * t1)
         else:
-            from cs336_systems.laccelerate import LSiLUFunc
+            from systems.laccelerate import LSiLUFunc
             if not self.silu:
                 t1 = self.w1(x)
                 t3 = self.w3(x)
@@ -151,7 +151,7 @@ def LNaiveSDPA(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Te
                 QK = rearrange(QK, 'queries d_head batch keys -> batch d_head queries keys')
     
     with range_ctx("SDPA Softmax and V"):
-        ret = einsum(LSoftmax(QK, dim=3), V, '... queries keys , ... keys d -> ... queries d')
+        ret = einsum(LSoftmax(QK, dim=-1), V, '... queries keys , ... keys d -> ... queries d')
 
     return ret
 
@@ -235,6 +235,9 @@ class LTransformerBlock(torch.nn.Module):
 
         assert not (compile and custom_kernel), "Cannot use both compile and custom_kernel!"
 
+        self._compile = compile
+        self._custom_kernel = custom_kernel
+
         if no_rms_norm:
             self.ln1 = self.ln2 = None
         else:
@@ -243,7 +246,7 @@ class LTransformerBlock(torch.nn.Module):
                 self.ln2 = LRMSNorm(d_model, device=device, dtype=dtype)
             else:
                 # use custom kernel LRMSNorm - slower than torch.compile :(
-                from cs336_systems.laccelerate import LRMSNormFast
+                from systems.laccelerate import LRMSNormFast
                 self.ln1 = LRMSNormFast(d_model, device=device, dtype=dtype)
                 self.ln2 = LRMSNormFast(d_model, device=device, dtype=dtype)
 
@@ -255,6 +258,37 @@ class LTransformerBlock(torch.nn.Module):
             self.ln2 = torch.compile(self.ln2)
         if compile:
             self.attn = torch.compile(self.attn)
+    
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs) -> None:
+        # overwrite to handle the name mapping problems with torch.compile
+        to_add_orig_mod = []
+        to_remove_orig_mod = []
+        if (self.ln1 is not None) and (self.ln2 is not None):
+            if self._compile:
+                to_add_orig_mod.extend(['ln1', 'ln2'])
+            else:
+                to_remove_orig_mod.extend(['ln1', 'ln2'])
+        if self._compile:
+            to_add_orig_mod.append('attn')
+        else:
+            to_remove_orig_mod.append('attn')
+        new_state_dict = {}
+        name_to_delete = []
+        for k, v in state_dict.items():
+            for pat in to_add_orig_mod:
+                if pat in k and (not pat + '._orig_mod' in k):
+                    new_state_dict[k.replace(pat, pat + '._orig_mod')] = v
+                    name_to_delete.append(k)
+                    break
+            for pat in to_remove_orig_mod:
+                if (pat + '._orig_mod') in k:
+                    new_state_dict[k.replace(pat + '._orig_mod', pat)] = v
+                    name_to_delete.append(k)
+                    break
+        state_dict |= new_state_dict
+        for k in name_to_delete:
+            del state_dict[k]
+        return super()._load_from_state_dict(new_state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
         # padded_tokens: torch.bool [B, T]

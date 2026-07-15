@@ -1,0 +1,5 @@
+{
+  "tokenizer_vocab_path": "data/owt_vocab.txt",
+  "tokenizer_merges_path": "data/owt_merges.txt",
+  "model_config": "configs/models/gpt2_medium_owt.yaml",
+}

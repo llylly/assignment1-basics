@@ -16,8 +16,8 @@ import timeit
 from datetime import datetime
 from tqdm import tqdm
 
-from cs336_basics.lmodeling import LTransformerLM
-from cs336_basics.lopt import LAdamW, LCrossEntropy
+from basics.lmodeling import LTransformerLM
+from basics.lopt import LAdamW, LCrossEntropy
 
 
 @dataclass
@@ -41,14 +41,14 @@ class MainConfig:
 
 """
 Example Usage:
-uv run python cs336_systems/lprofile.py --model_config cs336_basics/configs/models/gpt2_tiny.yaml --modes O1 O2 O3  
-uv run python cs336_systems/lprofile.py --model_config cs336_basics/configs/models/gpt2_small.yaml --modes O1 O2 O3  
-uv run python cs336_systems/lprofile.py --model_config cs336_basics/configs/models/gpt2_medium.yaml --modes O1 O2 O3  
-uv run python cs336_systems/lprofile.py --model_config cs336_basics/configs/models/gpt2_large.yaml --modes O1 O2 O3  
-uv run python cs336_systems/lprofile.py --model_config cs336_basics/configs/models/gpt2_xl.yaml --modes O1 O2 O3  
+uv run python systems/lprofile.py --model_config configs/models/gpt2_tiny.yaml --modes O1 O2 O3  
+uv run python systems/lprofile.py --model_config configs/models/gpt2_small.yaml --modes O1 O2 O3  
+uv run python systems/lprofile.py --model_config configs/models/gpt2_medium.yaml --modes O1 O2 O3  
+uv run python systems/lprofile.py --model_config configs/models/gpt2_large.yaml --modes O1 O2 O3  
+uv run python systems/lprofile.py --model_config configs/models/gpt2_xl.yaml --modes O1 O2 O3  
 
-uv run nsys profile python cs336_systems/lprofile.py --model_config cs336_basics/configs/models/gpt2_small.yaml --modes O
-uv run nsys profile --trace=cuda,cudnn,cublas,osrt,nvtx --cudabacktrace=all --python-backtrace=cuda python cs336_systems/lprofile.py --model_config cs336_basics/configs/models/gpt2_small.yaml --modes O1
+uv run nsys profile python systems/lprofile.py --model_config configs/models/gpt2_small.yaml --modes O
+uv run nsys profile --trace=cuda,cudnn,cublas,osrt,nvtx --cudabacktrace=all --python-backtrace=cuda python systems/lprofile.py --model_config configs/models/gpt2_small.yaml --modes O1
 """
 if __name__ == '__main__':
     config = tyro.cli(MainConfig)

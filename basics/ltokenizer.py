@@ -10,7 +10,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-from cs336_basics.pretokenization_example import find_chunk_boundaries
+from basics.pretokenization_example import find_chunk_boundaries
 
 num_processes = 16
 
@@ -392,16 +392,16 @@ parser.add_argument('--traintext', type=str)
 parser.add_argument('--vocab_size', type=int)
 """
 Training usage:
-    uv run python cs336_basics/ltokenizer.py data/owt_vocab.txt data/owt_merges.txt --traintext data/owt_train.txt --vocab_size 32000 
-    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --traintext data/TinyStoriesV2-GPT4-train.txt --vocab_size 10000 
-    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --traintext data/TinyStoriesV2-GPT4-valid.txt --vocab_size 10000 
+    uv run python basics/ltokenizer.py data/owt_vocab.txt data/owt_merges.txt --traintext data/owt_train.txt --vocab_size 32000 
+    uv run python basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --traintext data/TinyStoriesV2-GPT4-train.txt --vocab_size 10000 
+    uv run python basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --traintext data/TinyStoriesV2-GPT4-valid.txt --vocab_size 10000 
 Test usage:
-    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-tinytiny.txt --tokenize_output_path data/TinyStoriesV2-GPT4-tinytiny.tokenized.npy
-    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-tiny.txt --tokenize_output_path data/TinyStoriesV2-GPT4-tiny.tokenized.npy
-    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-valid.txt --tokenize_output_path data/TinyStoriesV2-GPT4-valid.tokenized.npy
-    uv run python cs336_basics/ltokenizer.py data/owt_vocab.txt data/owt_merges.txt --text_path data/owt_valid.txt --tokenize_output_path data/owt_valid.tokenized.npy
-    uv run python cs336_basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-train.txt --tokenize_output_path data/TinyStoriesV2-GPT4-train.tokenized.npy
-    uv run python cs336_basics/ltokenizer.py data/owt_vocab.txt data/owt_merges.txt --text_path data/owt_train.txt --tokenize_output_path data/owt_train.tokenized.npy
+    uv run python basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-tinytiny.txt --tokenize_output_path data/TinyStoriesV2-GPT4-tinytiny.tokenized.npy
+    uv run python basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-tiny.txt --tokenize_output_path data/TinyStoriesV2-GPT4-tiny.tokenized.npy
+    uv run python basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-valid.txt --tokenize_output_path data/TinyStoriesV2-GPT4-valid.tokenized.npy
+    uv run python basics/ltokenizer.py data/owt_vocab.txt data/owt_merges.txt --text_path data/owt_valid.txt --tokenize_output_path data/owt_valid.tokenized.npy
+    uv run python basics/ltokenizer.py data/TinyStoriesV2-GPT4-vocab.txt data/TinyStoriesV2-GPT4-merges.txt --text_path data/TinyStoriesV2-GPT4-train.txt --tokenize_output_path data/TinyStoriesV2-GPT4-train.tokenized.npy
+    uv run python basics/ltokenizer.py data/owt_vocab.txt data/owt_merges.txt --text_path data/owt_train.txt --tokenize_output_path data/owt_train.tokenized.npy
 """
 if __name__ == '__main__':
     args = parser.parse_args()

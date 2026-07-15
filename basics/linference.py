@@ -11,10 +11,10 @@ import torch
 import wandb
 from tqdm import tqdm
 
-from cs336_basics.ltrain_utils import load_checkpoint, save_checkpoint, dict_to_dataclass, LGetBatch
-from cs336_basics.lmodeling import LTransformerLM, LSoftmax
-from cs336_basics.lopt import LAdamW, LCosineLR, LCrossEntropy, LGradientClipping
-from cs336_basics.ltokenizer import LTokenizer
+from basics.ltrain_utils import load_checkpoint, save_checkpoint, dict_to_dataclass, LGetBatch
+from basics.lmodeling import LTransformerLM, LSoftmax
+from basics.lopt import LAdamW, LCosineLR, LCrossEntropy, LGradientClipping
+from basics.ltokenizer import LTokenizer
 
 @dataclass
 class MainConfig:
@@ -112,9 +112,9 @@ def generate(model: LTransformerLM, prompts: list[str], tokenizer: LTokenizer,
 
 """
 Example Usage:
-uv run python cs336_basics/linference.py --config_path cs336_basics/configs/gen_config_ts_small.yaml --model_path models/ts_small_corrected_20260625_18
-1530/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 0.0
-uv run python cs336_basics/linference.py --config_path cs336_basics/configs/gen_config_ts_tiny.yaml --model_path models/ts_tiny_20260701_175105/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 0.0
+uv run python basics/linference.py --config_path configs/gen_config_ts_small.yaml --model_path models/ts_small_20260701_001346/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 1.0
+uv run python basics/linference.py --config_path configs/gen_config_ts_tiny.yaml --model_path models/ts_tiny_20260701_175105/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 0.0
+uv run python basics/linference.py --config_path configs/gen_config_owt_small.yaml --model_path models/owt_small_20260702_035910/step_164999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 1.0
 """
 
 if __name__ == '__main__':

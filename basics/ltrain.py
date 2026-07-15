@@ -12,9 +12,9 @@ import wandb
 from datetime import datetime
 from tqdm import tqdm
 
-from cs336_basics.ltrain_utils import load_checkpoint, save_checkpoint, dict_to_dataclass, LGetBatch
-from cs336_basics.lmodeling import LTransformerLM
-from cs336_basics.lopt import LAdamW, LSGD, LCosineLR, LCrossEntropy, LGradientClipping
+from basics.ltrain_utils import load_checkpoint, save_checkpoint, dict_to_dataclass, LGetBatch
+from basics.lmodeling import LTransformerLM
+from basics.lopt import LAdamW, LSGD, LCosineLR, LCrossEntropy, LGradientClipping
 
 @dataclass
 class TrainerConfig:
@@ -53,42 +53,42 @@ class MainConfig:
 
 """
 Example Usage:
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml --trainer.learning_rate 0.0005 --run_name lr_5e-4
+uv run python basics/ltrain.py --config_path configs/main_config_ts_small.yaml
+uv run python basics/ltrain.py --config_path configs/main_config_ts_small.yaml --trainer.learning_rate 0.0005 --run_name lr_5e-4
 (below are prior to the fix)
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_small.yaml --val_step 5000 --save_step 5000
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_medium.yaml --val_step 5000 --save_step 5000
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_medium.yaml --trainer.learning_rate 0.0003 --val_step 5000 --save_step 5000 --run_name lr_3e-4
+uv run python basics/ltrain.py --config_path configs/main_config_owt_small.yaml --val_step 5000 --save_step 5000
+uv run python basics/ltrain.py --config_path configs/main_config_owt_medium.yaml --val_step 5000 --save_step 5000
+uv run python basics/ltrain.py --config_path configs/main_config_owt_medium.yaml --trainer.learning_rate 0.0003 --val_step 5000 --save_step 5000 --run_name lr_3e-4
 (below are after the fix)
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_small.yaml --val_step 5000 --save_step 5000
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_owt_medium.yaml --val_step 5000 --save_step 5000
+uv run python basics/ltrain.py --config_path configs/main_config_owt_small.yaml --val_step 5000 --save_step 5000
+uv run python basics/ltrain.py --config_path configs/main_config_owt_medium.yaml --val_step 5000 --save_step 5000
 
 Ablations on tiny training config:
 
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0001 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1e-4_bs_32_len_256_step_66k
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0001 --trainer.batch_size 64 --trainer.seqlen 256 --trainer.tot_steps 33000 --run_name lr_1e-4_bs_64_len_256_step_33k
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0003 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_3e-4_bs_32_len_256_step_66k
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0001 --trainer.batch_size 32 --trainer.seqlen 512 --trainer.tot_steps 33000 --run_name lr_1e-4_bs_32_len_512_step_33k
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0005 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_5e-4_bs_32_len_256_step_66k
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1e-3_bs_32_len_256_step_66k 
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0015 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1.5e-3_bs_32_len_256_step_66k
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --trainer.warmup_steps 5000 --trainer.cooldown_steps 5000 --run_name lr_1e-3_bs_32_len_256_step_66k_warmup_5k_cool_5k [* best]
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --trainer.warmup_steps 5000 --trainer.cooldown_steps 5000 --trainer.weight_decay 0.2 --run_name lr_1e-3_bs_32_len_256_step_66k_warmup_5k_cool_5k_wd_0.2 
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0001 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1e-4_bs_32_len_256_step_66k
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0001 --trainer.batch_size 64 --trainer.seqlen 256 --trainer.tot_steps 33000 --run_name lr_1e-4_bs_64_len_256_step_33k
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0003 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_3e-4_bs_32_len_256_step_66k
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0001 --trainer.batch_size 32 --trainer.seqlen 512 --trainer.tot_steps 33000 --run_name lr_1e-4_bs_32_len_512_step_33k
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0005 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_5e-4_bs_32_len_256_step_66k
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1e-3_bs_32_len_256_step_66k 
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0015 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --run_name lr_1.5e-3_bs_32_len_256_step_66k
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --trainer.warmup_steps 5000 --trainer.cooldown_steps 5000 --run_name lr_1e-3_bs_32_len_256_step_66k_warmup_5k_cool_5k [* best]
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.learning_rate 0.0010 --trainer.batch_size 32 --trainer.seqlen 256 --trainer.tot_steps 66000 --trainer.warmup_steps 5000 --trainer.cooldown_steps 5000 --trainer.weight_decay 0.2 --run_name lr_1e-3_bs_32_len_256_step_66k_warmup_5k_cool_5k_wd_0.2 
 
 Ablations on tiny arch config (from best training config):
 
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_no_rms_norm.yaml --run_name no_rms_norm
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_post_norm.yaml --run_name post_norm
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_nope.yaml --run_name nope
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --model_config cs336_basics/configs/models/gpt2_tiny_silu.yaml --run_name silu
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml # correction after fixing adamw bug
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --model_config configs/models/gpt2_tiny_no_rms_norm.yaml --run_name no_rms_norm
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --model_config configs/models/gpt2_tiny_post_norm.yaml --run_name post_norm
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --model_config configs/models/gpt2_tiny_nope.yaml --run_name nope
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --model_config configs/models/gpt2_tiny_silu.yaml --run_name silu
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml # correction after fixing adamw bug
 
-Still search for best lr for SGD: [ongoing]
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.opt_type sgd --run_name sgd # need much larger lr, such as 0.01
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_tiny.yaml --trainer.opt_type sgd --trainer.learning_rate 0.03 --run_name sgd_lr_3e-2 
+Still search for best lr for SGD:
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.opt_type sgd --run_name sgd # need much larger lr, such as 0.01
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.opt_type sgd --trainer.learning_rate 0.03 --run_name sgd_lr_3e-2 
 
 ML system optimization group: [ongoing]
-uv run python cs336_basics/ltrain.py --config_path cs336_basics/configs/main_config_ts_small.yaml --save_path models/speedopt_ts_small
+uv run python basics/ltrain.py --config_path configs/main_config_ts_small.yaml --save_path models/speedopt_ts_small
 """
 
 if __name__ == '__main__':

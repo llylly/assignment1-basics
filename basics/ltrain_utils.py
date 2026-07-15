@@ -42,10 +42,12 @@ def dict_to_dataclass(cls, d):
     return cls(**kwargs)
 
 if __name__ == '__main__':
-    from cs336_basics.lmodeling import LTransformerLM
-    from cs336_basics.lmodel_configs import gpt2_medium_model_config
+    from basics.lmodeling import LTransformerLM
+    import yaml
+    with open('configs/models/gpt2_medium.yaml', 'r') as f:
+        gpt2_medium_model_config = yaml.load(f, yaml.SafeLoader)
     config = gpt2_medium_model_config | {'device': 'cuda', 'dtype': torch.bfloat16}
     lm = LTransformerLM(**config)
-    from cs336_basics.lopt import LAdamW
+    from basics.lopt import LAdamW
     optimizer = LAdamW(lm.parameters(), 0.001, (0.9, 0.95), 0.01)
     # save_checkpoint(lm, optimizer, 10, 'tmp/tmp.pt')

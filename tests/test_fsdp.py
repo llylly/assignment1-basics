@@ -24,7 +24,7 @@ class ToyFSDPModel(nn.Module):
 
     def __init__(self, vocab_size=100, d_model=64, d_ff=128):
         super().__init__()
-        from cs336_basics.model import Embedding, Linear, RMSNorm
+        from basics.model import Embedding, Linear, RMSNorm
 
         self.embedding = Embedding(vocab_size, d_model)
         self.norm1 = RMSNorm(d_model)
@@ -50,7 +50,7 @@ def _apply_mixed_precision_hooks(model, compute_dtype):
     behavior: cast Linear/Embedding weights to compute_dtype for
     forward/backward, keep master weights and optimizer updates in fp32.
     """
-    from cs336_basics.model import Embedding, Linear
+    from basics.model import Embedding, Linear
 
     for mod in model.modules():
         if not isinstance(mod, (Linear, Embedding)):
@@ -201,7 +201,7 @@ def test_fsdp_gradient_sync(compute_dtype):
 
 
 def _test_fsdp_gradient_sync(rank: int, world_size: int, compute_dtype):
-    from cs336_basics.model import Embedding, Linear
+    from basics.model import Embedding, Linear
 
     torch.use_deterministic_algorithms(True)
     device = _setup_process_group(rank=rank, world_size=world_size, backend="gloo")
