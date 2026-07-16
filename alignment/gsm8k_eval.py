@@ -41,7 +41,7 @@ uv run alignment/gsm8k_eval.py --backend native --prompt_type question_only
 if __name__ == '__main__':
     config = tyro.cli(EvalConfig)
     nowtime = datetime.now().strftime('_%Y%m%d_%H%M%S')
-    run_name = f'gsm8k_test_{config.run_suffix}_{config.model_dir.replace("/", "-")}_{config.backend}_{config.dtype}_prompt_{config.prompt_type}_max_new_tokens_{config.max_new_tokens}_temp_{config.temperature}_n_{config.n}_bs_{config.batch_size}_{nowtime}'
+    run_name = f'gsm8k_test_{config.run_suffix}_{config.backend}_prompt_{config.prompt_type}_temp_{config.temperature}_n_{config.n}_max_new_tokens_{config.max_new_tokens}_{config.model_dir.replace("/", "-")}_{config.dtype}_bs_{config.batch_size}_{nowtime}'
 
     # wandb
     wandb.init(project='LLLM_eval_gsm8k_test', name=run_name, config=asdict(config), dir=os.path.join(config.save_dir, 'wandb_logs'))
