@@ -138,9 +138,12 @@ if __name__ == '__main__':
     with open(os.path.join(config.save_dir, run_name + '.jsonl'), 'w') as f:
         for fin in all_finished:
             json.dump(fin, f)
+            print('', file=f) # add \n
     with open(os.path.join(config.save_dir, run_name + '.summary.log'), 'w') as f:
         json.dump({'avg_pass1': avg_pass1, 'avg_passn': avg_passn}, f, indent=2)
-    print('Done. Output to', os.path.join(config.save_dir, run_name + '.jsonl'), 'and', os.path.join(config.save_dir, run_name + '.summary.log'))
+    with open(os.path.join(config.save_dir, run_name + '.config.log'), 'w') as f:
+        json.dump(asdict(config), f, indent=2)
+    print('Done. Output to', os.path.join(config.save_dir, run_name + '.jsonl'), 'and', os.path.join(config.save_dir, run_name + '.summary.log'), 'and', os.path.join(config.save_dir, run_name + '.config.log'))
         
 
     
