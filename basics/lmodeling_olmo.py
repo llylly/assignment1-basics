@@ -6,7 +6,7 @@ import json
 import safetensors
 import torch
 from basics.ltokenizer import LTokenizer
-from lmodeling import *
+from basics.lmodeling import *
 
 
 class LOlmo2ROPE(torch.nn.Module):
@@ -359,7 +359,7 @@ class LOlmo2TransformerLM(torch.nn.Module):
         print('residual:', format_flops(residual_flops, tot_flops))
         print(f'Training Density  (bs={batch_size}, seqlen={seq_len}):', compute_density)
 
-def from_pretrained(model_dir, dtype=None, device='cuda'):
+def from_pretrained(model_dir: str, dtype=None, device='cuda') -> tuple[LOlmo2TransformerLM, LTokenizer]:
     supported_config_params = [
         'hidden_size',
         'intermediate_size',
@@ -425,4 +425,5 @@ if __name__ == '__main__':
         prompt = input('\n> ')
         if not prompt:
             break
-        ret = generate(model, [prompt], tokenizer, max_new_tokens=4096, temperature=0.0)
+        ret = generate(model, [prompt], tokenizer, max_new_tokens=1024, temperature=0.0)
+        # print(ret)

@@ -13,16 +13,11 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from basics.linference import LCompletion
+
 import torch
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class VLLMCompletion:
-    text: str
-    token_ids: list[int]
-    finish_reason: str | None
 
 
 @dataclass
@@ -77,7 +72,7 @@ class VLLMServer:
         prompts: list[str],
         sampling_params: dict,
         batch_size: int | None = None,
-    ) -> list[VLLMCompletion]:
+    ) -> list[LCompletion]:
         return generate_completions(
             vllm_base_url=self.base_url,
             model_id=self.model_id,
@@ -117,6 +112,7 @@ def start_server(
     model_id: str,
     host: str,
     port: int,
+    dtype: str,
     gpu: int,
     seed: int,
     load_format: str,
@@ -136,7 +132,7 @@ def start_server(
         "--port",
         str(port),
         "--dtype",
-        "bfloat16",
+        dtype,
         "--enable-prefix-caching",
         "--gpu-memory-utilization",
         str(gpu_memory_utilization),
@@ -184,7 +180,7 @@ def generate_completions(
     prompts: list[str],
     sampling_params: dict,
     batch_size: int | None = None,
-) -> list[VLLMCompletion]:
+) -> list[LCompletion]:
     if batch_size is not None and batch_size <= 0:
         raise ValueError("batch_size must be positive.")
 
@@ -210,12 +206,13 @@ def generate_completions(
         response = _http_json("POST", f"{vllm_base_url}/v1/completions", payload, timeout=3600)
         choices = sorted(response["choices"], key=lambda choice: choice["index"])
         completions.extend(
-            VLLMCompletion(
+            LCompletion(
+                prompt=prompt_batch[i // sampling_params['n']],
                 text=choice["text"],
                 token_ids=choice.get("token_ids") or [],
                 finish_reason=choice.get("finish_reason"),
             )
-            for choice in choices
+            for i,choice in enumerate(choices)
         )
     return completions
 

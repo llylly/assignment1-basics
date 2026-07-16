@@ -174,3 +174,4 @@ models/
 *.nsys-rep
 *.qdstrm
 memory_snapshot.pickle
+eval/

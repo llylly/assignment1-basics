@@ -38,6 +38,14 @@ class MainConfig:
     device: str = 'cuda'
     dtype: Literal['bfloat16', 'float32'] = 'bfloat16'
 
+
+@dataclass
+class LCompletion:
+    prompt: str | None
+    text: str
+    token_ids: list[int]
+    finish_reason: str | None # "stop" / "length" / "content_filter"
+
 def sampler(y: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0): # y: [B, V] # output [B, 1]
     if temperature <= 1e-10:
         # greedy
@@ -60,13 +68,14 @@ def sampler(y: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0): # y:
         return y_sampled
 
 def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], tokenizer: LTokenizer,
-             max_new_tokens: int = 256, temperature: float = 1.0, top_p: float = 1.0, device: str = 'cuda', pad_token_id = -100):
+             max_new_tokens: int = 256, temperature: float = 1.0, top_p: float = 1.0, device: str = 'cuda', 
+             pad_token_id = -100, extra_stop_tokens: list[str] | None = None, include_stop_str_in_output=False, verbose=True) -> List[LCompletion]:
     token_list = [tokenizer.encode(pp) for pp in prompts]
     max_token_len = max([len(item) for item in token_list])
     padded_token_list = [[pad_token_id] * (max_token_len - len(item)) + item for item in token_list]
     x = torch.tensor(padded_token_list, dtype=torch.long, device=device)
     eof = tokenizer.encode(tokenizer.eos_token)[0] if tokenizer.eos_token else None # '<|endoftext|>'
-    print(prompts)
+    if verbose: print(prompts)
     ys = [[] for _ in prompts]
     now_new_tokens = 0
 
@@ -74,11 +83,18 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
     not_finished = torch.ones((tot_seq,), dtype=torch.bool, device=device)
     kv_cache: dict | None = None
 
+    if extra_stop_tokens is None:
+        extra_stop_tokens = []
+    stop_token_ids = [tokenizer.encode(item)[0] for item in extra_stop_tokens if len(tokenizer.encode(item)) == 1]
+    if eof:
+        stop_token_ids = torch.tensor([eof] + stop_token_ids, device=device).view(1, -1)
+        extra_stop_tokens.append(tokenizer.eos_token)
+
     with torch.no_grad():
         while True:
             max_seq_len = model.layers[0].attn.max_seq_len if isinstance(model, LTransformerLM) else model.layers[0].self_attn.max_seq_len
             if now_new_tokens >= max_new_tokens or x.shape[-1] > max_seq_len:
-                print(f'!!! exceeds length: now new tokens = {now_new_tokens}, now ctx len = {x.shape[-1]}')
+                if verbose: print(f'!!! exceeds length: now new tokens = {now_new_tokens}, now ctx len = {x.shape[-1]}')
                 break
             y, kv_cache = model.batch_generate(x, kv_cache=kv_cache, pad_token_id=pad_token_id)
             last_y = y[:, -1]
@@ -86,32 +102,48 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
             x = torch.concat([x, pred_y], dim=1)
             now_new_tokens += 1
 
+            new_finished = torch.any(pred_y == stop_token_ids, dim=1).view(-1)
+
             ii = 0
             for i in range(len(prompts)):
                 if not_finished[i]:
                     ys[i].append(pred_y[ii].item())
+                    try:
+                        now_decoded = tokenizer.decode(ys[i])
+                        if any([now_decoded.find(extra_stop_token) != -1 for extra_stop_token in extra_stop_tokens]):
+                            new_finished[ii] = True
+                    except UnicodeDecodeError:
+                        pass
                     ii += 1
             
-            new_finished = (pred_y == eof).view(-1)
-            # print(new_finished)
             kv_cache = [(k[~new_finished], v[~new_finished]) for k,v in kv_cache]
             x = x[~new_finished]
             not_finished[not_finished.clone()] = ~new_finished
 
-            print(tokenizer.vocab[pred_y[0].item()].decode('utf-8'), end='', flush=True) # just for showing the first sentence to demonstrate the progress
+            if verbose: 
+                try:
+                    print(tokenizer.vocab[pred_y[0].item()].decode('utf-8'), end='', flush=True) # just for showing the first sentence to demonstrate the progress
+                except UnicodeDecodeError:
+                    pass # For non-English multi-byte char, this can happen
 
             if not torch.any(not_finished):
                 break
     
-    text = []
-    for prompt, response_lst in zip(prompts, ys):
-        try:
-            eofidx = response_lst.index(eof)
-            response = tokenizer.decode(response_lst[:eofidx])
-        except ValueError:
-            response = tokenizer.decode(response_lst)
-        text.append(response)
-    return token_list, ys, text
+    stop_reasons = ['length' if not_finished[i] else 'stop' for i in range(len(prompts))]
+    ret = []
+
+    for prompt, response_lst, stop_reason in zip(prompts, ys, stop_reasons):
+        if include_stop_str_in_output:
+            fin_response_lst = response_lst
+        else:
+            fin_response_lst = response_lst
+            for i in range(len(response_lst)):
+                if response_lst[i] in stop_token_ids:
+                    fin_response_lst = response_lst[:i]
+                    break
+        response = tokenizer.decode(fin_response_lst)
+        ret.append(LCompletion(prompt, response, fin_response_lst, stop_reason))
+    return ret
 
 """
 Example Usage:
@@ -147,9 +179,9 @@ if __name__ == '__main__':
         states = torch.load(f)
     model.load_state_dict(states['model'])
 
-    prompt_tokenized, response_tokenized, response_text = generate(model, config.prompts, tokenizer,
-                                                                   config.max_new_tokens, config.temperature, config.top_p, config.device)
+    completions = generate(model, config.prompts, tokenizer,
+                           config.max_new_tokens, config.temperature, config.top_p, config.device)
     print('=' * 10)
-    print(('*' * 10 + '\n').join([text + '|' + response for text, response in zip(config.prompts, response_text)]))
+    print(('*' * 10 + '\n').join([text + '|' + completion.text for text, completion in zip(config.prompts, completions)]))
     print('=' * 10)
 
