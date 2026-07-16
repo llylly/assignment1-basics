@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import os
 import sys
 import regex as re
+from functools import lru_cache
 from multiprocessing import Pool
 import heapq
 import json
@@ -11,6 +12,54 @@ import numpy as np
 from tqdm import tqdm
 
 from basics.pretokenization_example import find_chunk_boundaries
+
+@lru_cache
+def gpt2_bytes_to_unicode() -> dict[int, str]:
+    """
+    Returns a mapping between every possible byte (an integer from 0 to 255) to a
+    printable unicode string character representation. This function is taken
+    from the GPT-2 code.
+
+    For example, `chr(0)` is `\x00`, which is an unprintable character:
+
+    >>> chr(0)
+    '\x00'
+    >>> print(chr(0))
+
+    As a result, this function returns a dictionary `d` where `d[0]` returns `Ā`.
+    The bytes that are visually printable keep their original string representation [1].
+    For example, `chr(33)` returns `!`, and so accordingly `d[33]` returns `!`.
+    Note in particular that the space character `chr(32)` becomes `d[32]`, which
+    returns 'Ġ'.
+
+    For unprintable characters, the function shifts takes the integer representing
+    the Unicode code point of that character (returned by the Python `ord`) function
+    and shifts it by 256. For example, `ord(" ")` returns `32`, so the the space character
+    ' ' is shifted to `256 + 32`. Since `chr(256 + 32)` returns `Ġ`, we use that as the
+    string representation of the space.
+
+    This function can simplify the BPE implementation and makes it slightly easier to
+    manually inspect the generated merges after they're serialized to a file.
+    """
+    # These 188 integers can used as-is, since they are not whitespace or control characters.
+    # See https://www.ssec.wisc.edu/~tomw/java/unicode.html.
+    bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
+    cs = bs[:]
+    # now get the representations of the other 68 integers that do need shifting
+    # each will get mapped chr(256 + n), where n will grow from 0...67 in the loop
+    # Get printable representations of the remaining integers 68 integers.
+    n = 0
+    for b in range(2**8):
+        if b not in bs:
+            # If this integer isn't in our list of visually-representable
+            # charcters, then map it to the next nice character (offset by 256)
+            bs.append(b)
+            cs.append(2**8 + n)
+            n += 1
+    characters = [chr(n) for n in cs]
+    d = dict(zip(bs, characters))
+    return d
+
 
 num_processes = 16
 
@@ -247,6 +296,8 @@ class LTokenizer:
         self.inv_vocab = {v: k for k, v in self.vocab.items()}
         self.int_merges = [(self.inv_vocab[ka], self.inv_vocab[kb]) for ka, kb in self.merges]
         self.int_merges_map = {item: i  for i, item in enumerate(self.int_merges)}
+        
+        self.eos_token = special_tokens[0] if special_tokens else None
 
         self.PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
         if self.special_tokens is not None:
@@ -277,6 +328,40 @@ class LTokenizer:
                 line = eval(line)
                 merges.append((bytes(line[0]), bytes(line[1])))
         return LTokenizer(vocab, merges, special_tokens)
+    
+    @classmethod
+    def from_hf_tokenziers(cls, model_dir: str):
+        # Restore from vocab.json and merges.txt
+        gpt2_byte_decoder = {v: k for k, v in gpt2_bytes_to_unicode().items()}
+        vocab_path = os.path.join(model_dir, 'vocab.json')
+        merges_path = os.path.join(model_dir, 'merges.txt')
+        tokenizer_cfg_path = os.path.join(model_dir, 'tokenizer_config.json') # if exists, will read special_tokens from here
+        assert os.path.exists(merges_path) and os.path.exists(vocab_path)
+        with open(vocab_path, 'r') as f:
+            vocab_dict = json.load(f) # str -> int
+        vocab = {v: bytes([gpt2_byte_decoder[c] for c in k]) for k, v in vocab_dict.items()} # int -> char
+        merges = []
+        with open(merges_path, 'r') as f:
+            for line in f.readlines():
+                if line.rstrip():
+                    try:
+                        m1, m2 = line.rstrip().split(' ')
+                        assert (m1 in vocab_dict) and (m2 in vocab_dict)
+                        merges.append((bytes([gpt2_byte_decoder[c] for c in m1]), bytes([gpt2_byte_decoder[c] for c in m2])))
+                    except:
+                        print('Ignored line:', line)
+                        continue
+        if os.path.exists(tokenizer_cfg_path):
+            with open(tokenizer_cfg_path, 'r') as f:
+                tok_cfg = json.load(f)
+                special_tokens = [v['content'] for k, v in tok_cfg['added_tokens_decoder'].items()]
+                eos_token = tok_cfg['eos_token']
+        else:
+            special_tokens = []
+            eos_token = None
+        cons_tokenizer = LTokenizer(vocab, merges, special_tokens)
+        cons_tokenizer.eos_token = eos_token
+        return cons_tokenizer
 
     def encode(self, text: str) -> list[int]:
         chunks = []

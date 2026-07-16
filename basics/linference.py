@@ -16,6 +16,8 @@ from basics.lmodeling import LTransformerLM, LSoftmax
 from basics.lopt import LAdamW, LCosineLR, LCrossEntropy, LGradientClipping
 from basics.ltokenizer import LTokenizer
 
+from basics.lmodeling_olmo import LOlmo2TransformerLM
+
 @dataclass
 class MainConfig:
     model_config: str
@@ -57,13 +59,13 @@ def sampler(y: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0): # y:
         y_sampled = torch.gather(y_argsort, 1, y_raw_sampled)
         return y_sampled
 
-def generate(model: LTransformerLM, prompts: list[str], tokenizer: LTokenizer,
+def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], tokenizer: LTokenizer,
              max_new_tokens: int = 256, temperature: float = 1.0, top_p: float = 1.0, device: str = 'cuda', pad_token_id = -100):
     token_list = [tokenizer.encode(pp) for pp in prompts]
     max_token_len = max([len(item) for item in token_list])
     padded_token_list = [[pad_token_id] * (max_token_len - len(item)) + item for item in token_list]
     x = torch.tensor(padded_token_list, dtype=torch.long, device=device)
-    eof = tokenizer.encode(tokenizer.special_tokens[0])[0] # '<|endoftext|>'
+    eof = tokenizer.encode(tokenizer.eos_token)[0] if tokenizer.eos_token else None # '<|endoftext|>'
     print(prompts)
     ys = [[] for _ in prompts]
     now_new_tokens = 0
@@ -74,8 +76,9 @@ def generate(model: LTransformerLM, prompts: list[str], tokenizer: LTokenizer,
 
     with torch.no_grad():
         while True:
-            if now_new_tokens >= max_new_tokens or x.shape[-1] > model.layers[0].attn.max_seq_len:
-                print(f'exceeds length: now new tokens = {now_new_tokens}, now ctx len = {x.shape[-1]}')
+            max_seq_len = model.layers[0].attn.max_seq_len if isinstance(model, LTransformerLM) else model.layers[0].self_attn.max_seq_len
+            if now_new_tokens >= max_new_tokens or x.shape[-1] > max_seq_len:
+                print(f'!!! exceeds length: now new tokens = {now_new_tokens}, now ctx len = {x.shape[-1]}')
                 break
             y, kv_cache = model.batch_generate(x, kv_cache=kv_cache, pad_token_id=pad_token_id)
             last_y = y[:, -1]

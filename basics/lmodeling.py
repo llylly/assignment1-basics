@@ -145,10 +145,10 @@ def LNaiveSDPA(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Te
         
         with range_ctx("SDPA Masking Context"):
             if padded_tokens is not None:
-                QK = rearrange(QK, 'batch d_head queries keys -> queries d_head batch keys')
+                QK = rearrange(QK, 'batch ... queries keys -> queries ... batch keys')
                 QK += padded_tokens * INF_MIN
                 # QK[padded_tokens] = INF_MIN
-                QK = rearrange(QK, 'queries d_head batch keys -> batch d_head queries keys')
+                QK = rearrange(QK, 'queries ... batch keys -> batch ... queries keys')
     
     with range_ctx("SDPA Softmax and V"):
         ret = einsum(LSoftmax(QK, dim=-1), V, '... queries keys , ... keys d -> ... queries d')
@@ -290,7 +290,7 @@ class LTransformerBlock(torch.nn.Module):
             del state_dict[k]
         return super()._load_from_state_dict(new_state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
     
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         # padded_tokens: torch.bool [B, T]
         if not self.post_norm:
             attn_x, kv_cache = self.attn(self.ln1(x) if not self.no_rms_norm else x, token_positions, padded_tokens, kv_cache)
