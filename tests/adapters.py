@@ -816,7 +816,7 @@ def run_rope(
     """
     from basics.lmodeling import LROPE
     rope = LROPE(theta, d_k, max_seq_len)
-    return rope.forward(in_query_or_key, token_positions)
+    return rope.forward(in_query_or_key, token_positions.unsqueeze(-1))
 
 
 def run_transformer_block(

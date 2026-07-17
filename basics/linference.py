@@ -51,20 +51,20 @@ def sampler(y: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0): # y:
         # greedy
         return y.argmax(dim=-1).unsqueeze(dim=-1)
     else:
-        # print(y, y.shape)
         y_temped = LSoftmax(y / temperature, dim=-1)
-        # print(y_temped)
-        y_argsort = torch.argsort(y_temped, dim=-1, descending=True)
-        # print(y_argsort, torch.max(y_argsort), torch.min(y_argsort), y_temped.shape)
-        y_sorted = torch.gather(y_temped, 1, y_argsort)
-        # print(y_sorted)
-        y_cumsum = y_sorted.cumsum(dim=-1)
-        # print(y_cumsum)
-        y_kept = torch.where(y_cumsum <= top_p, y_sorted, torch.zeros_like(y_sorted))
-        y_kept = y_kept / y_kept.sum(dim=-1, keepdim=True)
+        if top_p < 0.99999:
+            y_argsort = torch.argsort(y_temped, dim=-1, descending=True)
+            y_sorted = torch.gather(y_temped, 1, y_argsort)
+            y_cumsum = y_sorted.cumsum(dim=-1) - y_sorted
+            y_kept = torch.where(y_cumsum <= top_p, y_sorted, torch.zeros_like(y_sorted))
+            y_kept = y_kept / y_kept.sum(dim=-1, keepdim=True)
+        else:
+            y_kept = y_temped
         y_raw_sampled = torch.multinomial(y_kept, num_samples=1)
-        # print(y_raw_sampled)
-        y_sampled = torch.gather(y_argsort, 1, y_raw_sampled)
+        if top_p < 0.99999:
+            y_sampled = torch.gather(y_argsort, 1, y_raw_sampled)
+        else:
+            y_sampled = y_raw_sampled
         return y_sampled
 
 def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], tokenizer: LTokenizer,
@@ -77,6 +77,7 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
     padded_token_list = [[pad_token_id] * (max_token_len - len(item)) + item for item in token_list]
     x = torch.tensor(padded_token_list, dtype=torch.long, device=device)
     token_positions = (torch.cumsum(x != pad_token_id, dim=1) - 1).clamp(min=0).to(x.device)
+    padded_tokens = (x == pad_token_id)
 
     if verbose: print(prompts)
     ys = [[] for _ in prompts]
@@ -101,10 +102,11 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
             if now_new_tokens >= max_new_tokens or input_len + now_new_tokens > max_seq_len:
                 if verbose: print(f'!!! exceeds length: now new tokens = {now_new_tokens}, now ctx len = {x.shape[-1]}')
                 break
-            y, kv_cache = model.batch_generate(x, kv_cache=kv_cache, pad_token_id=pad_token_id, token_positions=token_positions if kv_cache else None, kv_cache_sliced_to=input_len + now_new_tokens - 1)
+            y, kv_cache = model.batch_generate(x, kv_cache=kv_cache, pad_token_id=pad_token_id, token_positions=token_positions if kv_cache else None, kv_cache_sliced_to=input_len + now_new_tokens - 1, padded_tokens=padded_tokens)
             last_y = y[:, -1]
             pred_y = sampler(last_y, temperature, top_p)
             token_positions = token_positions[:, -1:] + torch.cumsum(pred_y != pad_token_id, dim=1)
+            padded_tokens = torch.cat([padded_tokens, pred_y == pad_token_id], dim=-1)
             x = pred_y # no concatenate any more, fully rely on kv_cache to store previous x's
             now_new_tokens += 1
 
@@ -126,6 +128,7 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
                 kv_cache = [(k[~new_finished], v[~new_finished]) for k,v in kv_cache]
                 x = x[~new_finished]
                 token_positions = token_positions[~new_finished]
+                padded_tokens = padded_tokens[~new_finished]
                 not_finished[not_finished.clone()] = ~new_finished
 
             if verbose: 
