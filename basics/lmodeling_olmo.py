@@ -94,9 +94,9 @@ class LOlmo2MHA(torch.nn.Module):
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None, kv_cache_slice_to: int | None = None) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         if kv_cache is not None:
             # using kv cache
-            k_cache, v_cache = kv_cache # [B, L-1, D_M']
-            assert k_cache.shape[0] == x.shape[0] and k_cache.shape[1] >= kv_cache_slice_to and k_cache.shape[2] == self.num_key_value_heads * self.d_k
-            assert v_cache.shape[0] == x.shape[0] and v_cache.shape[1] >= kv_cache_slice_to and v_cache.shape[2] == self.num_key_value_heads * self.d_k
+            k_cache, v_cache = kv_cache # [L-1, B, D_M']
+            assert k_cache.shape[1] == x.shape[0] and k_cache.shape[0] >= kv_cache_slice_to and k_cache.shape[2] == self.num_key_value_heads * self.d_k
+            assert v_cache.shape[1] == x.shape[0] and v_cache.shape[0] >= kv_cache_slice_to and v_cache.shape[2] == self.num_key_value_heads * self.d_k
         
         q = self.q_norm(self.q_proj(x)) # [B, 1, D_M]
         new_k = self.k_norm(self.k_proj(x)) # [B, 1, D_M']
@@ -111,27 +111,28 @@ class LOlmo2MHA(torch.nn.Module):
             new_k = LOlmo2MHA.rope_cache(new_k, token_positions)
         
         if kv_cache is not None:
-            if (kv_cache_slice_to + new_k.shape[1] - 1) // self._KVCACHE_BLOCKSIZE > (k_cache.shape[1] - 1) // self._KVCACHE_BLOCKSIZE:
+            # let's make kv cache [L, B, D] rather than [B, L, D]
+            if (kv_cache_slice_to + new_k.shape[1] - 1) // self._KVCACHE_BLOCKSIZE > (k_cache.shape[0] - 1) // self._KVCACHE_BLOCKSIZE:
                 # KV_cache needs expansion
-                cells_to_add = (k_cache.shape[1] + new_k.shape[1] - 1) // self._KVCACHE_BLOCKSIZE * self._KVCACHE_BLOCKSIZE + self._KVCACHE_BLOCKSIZE - k_cache.shape[1]
-                new_k_cache = torch.concat([k_cache, torch.zeros([k_cache.shape[0], cells_to_add, k_cache.shape[2]], dtype=k_cache.dtype, device=k_cache.device)], dim=1)
-                new_v_cache = torch.concat([v_cache, torch.zeros([k_cache.shape[0], cells_to_add, k_cache.shape[2]], dtype=v_cache.dtype, device=v_cache.device)], dim=1)
+                cells_to_add = (k_cache.shape[0] + new_k.shape[1] - 1) // self._KVCACHE_BLOCKSIZE * self._KVCACHE_BLOCKSIZE + self._KVCACHE_BLOCKSIZE - k_cache.shape[0]
+                new_k_cache = torch.concat([k_cache, torch.zeros([cells_to_add, k_cache.shape[1], k_cache.shape[2]], dtype=k_cache.dtype, device=k_cache.device)], dim=0)
+                new_v_cache = torch.concat([v_cache, torch.zeros([cells_to_add, k_cache.shape[1], k_cache.shape[2]], dtype=v_cache.dtype, device=v_cache.device)], dim=0)
                 k_cache, v_cache = new_k_cache, new_v_cache
-            k_cache[:, kv_cache_slice_to: kv_cache_slice_to + new_k.shape[1], :] = new_k
-            v_cache[:, kv_cache_slice_to: kv_cache_slice_to + new_v.shape[1], :] = new_v
-            k, v = k_cache[:, :kv_cache_slice_to + new_k.shape[1], :], v_cache[:, :kv_cache_slice_to + new_v.shape[1], :]
+            k_cache[kv_cache_slice_to: kv_cache_slice_to + new_k.shape[1]] = new_k.transpose(0,1)
+            v_cache[kv_cache_slice_to: kv_cache_slice_to + new_v.shape[1]] = new_v.transpose(0,1)
+            k, v = k_cache[:kv_cache_slice_to + new_k.shape[1]], v_cache[:kv_cache_slice_to + new_v.shape[1]]
         else:
             cells_to_add = (new_k.shape[1] - 1) // self._KVCACHE_BLOCKSIZE * self._KVCACHE_BLOCKSIZE + self._KVCACHE_BLOCKSIZE
-            k_cache = torch.zeros([new_k.shape[0], cells_to_add, new_k.shape[2]], dtype=new_k.dtype, device=new_k.device)
-            v_cache = torch.zeros([new_v.shape[0], cells_to_add, new_v.shape[2]], dtype=new_v.dtype, device=new_v.device)
+            k_cache = torch.zeros([cells_to_add, new_k.shape[0], new_k.shape[2]], dtype=new_k.dtype, device=new_k.device)
+            v_cache = torch.zeros([cells_to_add, new_v.shape[0], new_v.shape[2]], dtype=new_v.dtype, device=new_v.device)
             # print(k_cache.shape, new_k.shape)
-            k_cache[:, :new_k.shape[1], :] = new_k
-            v_cache[:, :new_v.shape[1], :] = new_v
-            k, v = k_cache[:, :new_k.shape[1], :], v_cache[:, :new_v.shape[1], :]
+            k_cache[:new_k.shape[1]] = new_k.transpose(0,1)
+            v_cache[:new_v.shape[1]] = new_v.transpose(0,1)
+            k, v = k_cache[:new_k.shape[1]], v_cache[:new_v.shape[1]]
 
         q = rearrange(q, '... seqlen (h i d_k) -> ... h i seqlen d_k', i=self.num_attention_heads // self.num_key_value_heads, h=self.num_key_value_heads, d_k=self.d_k)
-        kk = rearrange(k, '... seqlen (h d_k) -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k)
-        vv = rearrange(v, '... seqlen (h d_k) -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k)
+        kk = rearrange(k, 'seqlen ... (h d_k) -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k)
+        vv = rearrange(v, 'seqlen ... (h d_k) -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k)
 
         if kv_cache is not None:
             # by latent assumption, q is of shape [B, H_K, R, 1 or L', D_K] pointing to the last token place

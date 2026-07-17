@@ -125,7 +125,7 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
                     ii += 1
             
             if any(new_finished):
-                kv_cache = [(k[~new_finished], v[~new_finished]) for k,v in kv_cache]
+                kv_cache = [(k[:, ~new_finished], v[:, ~new_finished]) for k,v in kv_cache]
                 x = x[~new_finished]
                 token_positions = token_positions[~new_finished]
                 padded_tokens = padded_tokens[~new_finished]
