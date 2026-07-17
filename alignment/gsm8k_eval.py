@@ -30,6 +30,146 @@ class EvalConfig:
     data_dir: str = 'data/gsm8k'
     run_suffix: str = 'baseeval'
     save_dir: str = 'eval'
+    vllm_server_no_host: bool = False # in this case, assume the host is already there
+    vllm_ip: str = '127.0.0.1'
+    vllm_port: int = 8080
+
+def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbose=True):
+
+    nowtime = datetime.now().strftime('_%Y%m%d_%H%M%S')
+    run_name = f'gsm8k_test_{eval_config.run_suffix}_{eval_config.backend}_prompt_{eval_config.prompt_type}_temp_{eval_config.temperature}_n_{eval_config.n}_max_new_tokens_{eval_config.max_new_tokens}_{eval_config.model_dir.replace("/", "-")}_{eval_config.dtype}_bs_{eval_config.batch_size}_{nowtime}'
+
+    # fuck antlr4
+    soft_rlimit, hard_rlimit = resource.getrlimit(resource.RLIMIT_STACK)
+    resource.setrlimit(resource.RLIMIT_STACK, (min(1048576 * 1024, hard_rlimit), hard_rlimit))
+
+    # wandb
+    if launch_wandb:
+        wandb.init(project='LLLM_eval_gsm8k_test', name=run_name, config=asdict(eval_config), dir=os.path.join(eval_config.save_dir, 'wandb_logs'))
+    stime = time.time()
+
+    # load data
+    with open(os.path.join(eval_config.data_dir, 'test.jsonl'), 'r') as f:
+        test_data = [json.loads(item) for item in f.readlines()]
+    
+    if verbose: print('Loading prompt...')
+    with open(os.path.join('alignment/prompts', eval_config.prompt_type + '.prompt'), 'r') as f:
+        prompt_template = f.read()
+
+    if verbose: print('Loading model...')
+    if eval_config.backend == 'vllm':
+        if not eval_config.vllm_server_no_host:
+            serv_proc = vllm_utils.start_server(eval_config.model_dir, eval_config.vllm_ip, eval_config.vllm_port, eval_config.dtype, 0, 42, "auto", 'INFO')
+            vllm_utils.wait_for_server(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', serv_proc, 60)
+    elif eval_config.backend == 'native':
+        model, tokenizer = lmodeling_olmo.from_pretrained(eval_config.model_dir, eval_config.dtype)
+
+
+    all_finished = []
+    now_cnt = 0
+    
+    avg_pass1 = {}
+    avg_passn = {}
+
+    try:
+        for item in tqdm.tqdm(test_data if eval_config.first_n_samp is None else test_data[:eval_config.first_n_samp]):
+            raw_question = item['question']
+            final_answer = item['answer'][item['answer'].find('####') + 4:].strip()
+            templated_question = prompt_template.format(question=raw_question)
+            continuations = []
+            while len(continuations) < eval_config.n:
+                amounts_to_gen = min(eval_config.n - len(continuations), eval_config.batch_size)
+                if eval_config.backend == 'vllm':
+                    ret = vllm_utils.generate_completions(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', eval_config.model_dir, [templated_question], {
+                        'temperature': eval_config.temperature,
+                        'max_tokens': eval_config.max_new_tokens,
+                        'n': amounts_to_gen,
+                        'seed': 42,
+                        'stop': ['</answer>'],
+                        'include_stop_str_in_output': True,
+                    }, None)
+                elif eval_config.backend == 'native':
+                    ret = generate(model, [templated_question for _ in range(amounts_to_gen)], tokenizer, eval_config.max_new_tokens, eval_config.temperature, extra_stop_tokens=['</answer>'], include_stop_str_in_output=True, verbose=False)
+                else:
+                    raise NotImplementedError
+                continuations.extend(ret)
+            
+            finished = {
+                'question': item['question'],
+                'answer': item['answer'],
+                'final_answer': final_answer,
+                'continuations': continuations
+            }
+            grades = []
+            if eval_config.prompt_type == 'r1_zero' or eval_config.prompt_type == 'r1_zero_three_shot_gsm8k':
+                grade_fn = drgrpo_grader.r1_zero_reward_fn
+            elif eval_config.prompt_type == 'question_only':
+                grade_fn = drgrpo_grader.question_only_reward_fn
+
+            for i in range(eval_config.n):
+                # too slow
+                # p = multiprocessing.get_context('spawn').Process(target=grade_fn, args=(finished['continuations'][i].text, final_answer, False))
+                # p.start()
+                # try:
+                #     p.join(timeout=3)
+                #     assert (p.exitcode is not None) and p.exitcode == 0 # first check whether it can safely exit
+                #     rewards = grade_fn(finished['continuations'][i].text, final_answer, False)
+                # except Exception:
+                #     rewards = grade_fn(finished['continuations'][i].text, final_answer, True)
+                # p.close()
+                rewards = grade_fn(finished['continuations'][i].text, final_answer, False)
+
+                # contains format_reward, answer_reward, reward
+                rewards['stopped'] = float(int(finished['continuations'][i].finish_reason == 'stop'))
+                rewards['ans_len'] = len(finished['continuations'][i].token_ids)
+                rewards['raw_text'] = finished['continuations'][i].text
+                rewards['gt_ans'] = final_answer
+                grades.append(rewards)
+            finished['grades'] = grades
+            del finished['continuations']
+            
+            pass1 = {}
+            passn = {}
+            for k in ['reward', 'answer_reward', 'format_reward', 'stopped', 'ans_len']:
+                pass1[k] = sum([item[k] for item in grades]) / len(grades)
+                passn[k] = max([item[k] for item in grades])
+                avg_pass1[k] = (avg_pass1.get(k, 0.0) * now_cnt + pass1[k]) / (now_cnt + 1)
+                avg_passn[k] = (avg_passn.get(k, 0.0) * now_cnt + passn[k]) / (now_cnt + 1)
+                print(f'{k:20}: now pass1 = {pass1[k]:5.3f} tot pass1 = {avg_pass1[k]:5.3f} now passn = {passn[k]:5.3f} tot passn = {avg_passn[k]:5.3f}')
+            finished['pass1'] = pass1
+            finished['passn'] = passn
+
+            now_cnt += 1
+            all_finished.append(finished)
+            if launch_wandb:
+                wandb.log({'pass1': pass1, 'passn': passn, 'avg_pass1': avg_pass1, 'avg_passn': avg_passn, 'time_spent': time.time() - stime}, step=now_cnt)
+    
+    except KeyboardInterrupt:
+        if eval_config.backend == 'vllm' and not eval_config.vllm_server_no_host:
+            vllm_utils.stop_server(serv_proc)
+        return
+    
+    if dump_file:
+        if not os.path.exists(eval_config.save_dir):
+            os.makedirs(eval_config.save_dir)
+        with open(os.path.join(eval_config.save_dir, run_name + '.jsonl'), 'w') as f:
+            for fin in all_finished:
+                json.dump(fin, f)
+                print('', file=f) # add \n
+        with open(os.path.join(eval_config.save_dir, run_name + '.summary.log'), 'w') as f:
+            json.dump({'avg_pass1': avg_pass1, 'avg_passn': avg_passn}, f, indent=2)
+        with open(os.path.join(eval_config.save_dir, run_name + '.config.log'), 'w') as f:
+            json.dump(asdict(eval_config), f, indent=2)
+
+        print('Saved to')
+        print(os.path.join(eval_config.save_dir, run_name + '.jsonl'))
+        print(os.path.join(eval_config.save_dir, run_name + '.summary.log'))
+        print(os.path.join(eval_config.save_dir, run_name + '.config.log'))
+
+    print('Done.')
+
+    # sanitize
+    resource.setrlimit(resource.RLIMIT_STACK, (soft_rlimit, hard_rlimit))
 
 """
 Example commands:
@@ -42,127 +182,6 @@ uv run alignment/gsm8k_eval.py --backend native --prompt_type question_only
 """
 if __name__ == '__main__':
     config = tyro.cli(EvalConfig)
-    nowtime = datetime.now().strftime('_%Y%m%d_%H%M%S')
-    run_name = f'gsm8k_test_{config.run_suffix}_{config.backend}_prompt_{config.prompt_type}_temp_{config.temperature}_n_{config.n}_max_new_tokens_{config.max_new_tokens}_{config.model_dir.replace("/", "-")}_{config.dtype}_bs_{config.batch_size}_{nowtime}'
-
-    # fuck antlr4
-    # soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
-    resource.setrlimit(resource.RLIMIT_STACK, (1048576 * 1024, 1048576 * 1024))
-
-    # wandb
-    wandb.init(project='LLLM_eval_gsm8k_test', name=run_name, config=asdict(config), dir=os.path.join(config.save_dir, 'wandb_logs'))
-    stime = time.time()
-
-    # load data
-    with open(os.path.join(config.data_dir, 'test.jsonl'), 'r') as f:
-        test_data = [json.loads(item) for item in f.readlines()]
-    
-    print('Loading prompt...')
-    with open(os.path.join('alignment/prompts', config.prompt_type + '.prompt'), 'r') as f:
-        prompt_template = f.read()
-
-    print('Loading model...')
-    if config.backend == 'vllm':
-        serv_proc = vllm_utils.start_server(config.model_dir, '127.0.0.1', 8080, config.dtype, 0, 42, "auto", 'INFO')
-        vllm_utils.wait_for_server('http://127.0.0.1:8080', serv_proc, 60)
-    elif config.backend == 'native':
-        model, tokenizer = lmodeling_olmo.from_pretrained(config.model_dir, config.dtype)
-    
-    all_finished = []
-
-    now_cnt = 0
-    
-    avg_pass1 = {}
-    avg_passn = {}
-
-    for item in tqdm.tqdm(test_data):
-        raw_question = item['question']
-        final_answer = item['answer'][item['answer'].find('####') + 4:].strip()
-        templated_question = prompt_template.format(question=raw_question)
-        continuations = []
-        while len(continuations) < config.n:
-            amounts_to_gen = min(config.n - len(continuations), config.batch_size)
-            if config.backend == 'vllm':
-                ret = vllm_utils.generate_completions('http://127.0.0.1:8080', 'models/OLMo-2-0425-1B', [templated_question], {
-                    'temperature': config.temperature,
-                    'max_tokens': config.max_new_tokens,
-                    'n': config.n,
-                    'seed': 42,
-                    'stop': ['</answer>'],
-                    'include_stop_str_in_output': True,
-                }, None)
-            elif config.backend == 'native':
-                ret = generate(model, [templated_question for _ in range(config.n)], tokenizer, config.max_new_tokens, config.temperature, extra_stop_tokens=['</answer>'], include_stop_str_in_output=True, verbose=False)
-            else:
-                raise NotImplementedError
-            continuations.extend(ret)
-        
-        finished = {
-            'question': item['question'],
-            'answer': item['answer'],
-            'final_answer': final_answer,
-            'continuations': continuations
-        }
-        grades = []
-        if config.prompt_type == 'r1_zero' or config.prompt_type == 'r1_zero_three_shot_gsm8k':
-            grade_fn = drgrpo_grader.r1_zero_reward_fn
-        elif config.prompt_type == 'question_only':
-            grade_fn = drgrpo_grader.question_only_reward_fn
-
-        for i in range(config.n):
-            # too slow
-            # p = multiprocessing.get_context('spawn').Process(target=grade_fn, args=(finished['continuations'][i].text, final_answer, False))
-            # p.start()
-            # try:
-            #     p.join(timeout=3)
-            #     assert (p.exitcode is not None) and p.exitcode == 0 # first check whether it can safely exit
-            #     rewards = grade_fn(finished['continuations'][i].text, final_answer, False)
-            # except Exception:
-            #     rewards = grade_fn(finished['continuations'][i].text, final_answer, True)
-            # p.close()
-            rewards = grade_fn(finished['continuations'][i].text, final_answer, False)
-
-            # contains format_reward, answer_reward, reward
-            rewards['stopped'] = float(int(finished['continuations'][i].finish_reason == 'stop'))
-            rewards['ans_len'] = len(finished['continuations'][i].token_ids)
-            rewards['raw_text'] = finished['continuations'][i].text
-            rewards['gt_ans'] = final_answer
-            grades.append(rewards)
-        finished['grades'] = grades
-        del finished['continuations']
-        
-        pass1 = {}
-        passn = {}
-        for k in ['reward', 'answer_reward', 'format_reward', 'stopped', 'ans_len']:
-            pass1[k] = sum([item[k] for item in grades]) / len(grades)
-            passn[k] = max([item[k] for item in grades])
-            avg_pass1[k] = (avg_pass1.get(k, 0.0) * now_cnt + pass1[k]) / (now_cnt + 1)
-            avg_passn[k] = (avg_passn.get(k, 0.0) * now_cnt + passn[k]) / (now_cnt + 1)
-            print(f'{k:20}: now pass1 = {pass1[k]:5.3f} tot pass1 = {avg_pass1[k]:5.3f} now passn = {passn[k]:5.3f} tot passn = {avg_passn[k]:5.3f}')
-        finished['pass1'] = pass1
-        finished['passn'] = passn
-
-        now_cnt += 1
-        all_finished.append(finished)
-        wandb.log({'pass1': pass1, 'passn': passn, 'avg_pass1': avg_pass1, 'avg_passn': avg_passn, 'time_spent': time.time() - stime}, step=now_cnt)
-
-        if config.first_n_samp: 
-            if now_cnt > config.first_n_samp: break
-
-    if config.backend == 'vllm':
-        vllm_utils.stop_server(serv_proc)
-    
-    if not os.path.exists(config.save_dir):
-        os.makedirs(config.save_dir)
-    with open(os.path.join(config.save_dir, run_name + '.jsonl'), 'w') as f:
-        for fin in all_finished:
-            json.dump(fin, f)
-            print('', file=f) # add \n
-    with open(os.path.join(config.save_dir, run_name + '.summary.log'), 'w') as f:
-        json.dump({'avg_pass1': avg_pass1, 'avg_passn': avg_passn}, f, indent=2)
-    with open(os.path.join(config.save_dir, run_name + '.config.log'), 'w') as f:
-        json.dump(asdict(config), f, indent=2)
-    print('Done. Output to', os.path.join(config.save_dir, run_name + '.jsonl'), 'and', os.path.join(config.save_dir, run_name + '.summary.log'), 'and', os.path.join(config.save_dir, run_name + '.config.log'))
-        
+    gsm8k_eval(config, dump_file=True, launch_wandb=True, verbose=True)
 
     

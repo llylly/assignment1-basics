@@ -366,7 +366,7 @@ class LTokenizer:
     def encode(self, text: str) -> list[int]:
         chunks = []
         st = 0
-        if len(text) > 1000:
+        if len(text) > 16384:
             # output tokenizing progress
             f = sys.stdout
         else:
