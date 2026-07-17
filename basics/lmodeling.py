@@ -109,17 +109,20 @@ class LROPE(torch.nn.Module):
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
         if True:
-            x_even = x.view(-1, self.d_k)[:,::2].view(list(x.shape[:-1]) + [self.d_k // 2])
-            x_odd = x.view(-1, self.d_k)[:,1::2].view(list(x.shape[:-1]) + [self.d_k // 2])
+            x_even = x.view(x.shape[0], x.shape[1], x.shape[2] // self.d_k, self.d_k)[:, :, :, ::2]
+            x_odd = x.view(x.shape[0], x.shape[1], x.shape[2] // self.d_k, self.d_k)[:, :, :, 1::2]
         else:
-            x_even = x.view(-1, self.d_k)[:,:self.d_k // 2].view(list(x.shape[:-1]) + [self.d_k // 2]) # whether to permute indexes to achieve a faster implementation, appears to be not critical
-            x_odd = x.view(-1, self.d_k)[:,self.d_k // 2:].view(list(x.shape[:-1]) + [self.d_k // 2])
+            x_odd = x.view(x.shape[0], x.shape[1], x.shape[2] // self.d_k, self.d_k)[:, :, :, self.d_k // 2:]
+            x_even = x.view(x.shape[0], x.shape[1], x.shape[2] // self.d_k, self.d_k)[:, :, :, :self.d_k // 2]
+
         cos_even_x = self.cos_angles[token_positions].to(x.dtype) * x_even
         cos_odd_x = self.cos_angles[token_positions].to(x.dtype) * x_odd
         nsin_odd_x = -self.sin_angles[token_positions].to(x.dtype) * x_odd
         sin_even_x = self.sin_angles[token_positions].to(x.dtype) * x_even
+
         ans_even = cos_even_x + nsin_odd_x
         ans_odd = cos_odd_x + sin_even_x
+        # print(x.shape, x_odd.shape, x_even.shape, ans_odd.shape, ans_even.shape)
         if True:
             ans = torch.stack([ans_even, ans_odd], dim=-1).contiguous().reshape(x.shape)
         else:
@@ -133,6 +136,7 @@ def LSoftmax(x: torch.Tensor, dim: int) -> torch.Tensor:
 
 @nvtx.range("SDPA")
 def LNaiveSDPA(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None) -> torch.Tensor:
+    # print(Q.shape, K.shape, V.shape, mask.shape)
     with range_ctx("SDPA Attention Score"):
         QK = einsum(Q, K, '... queries d, ... keys d -> ... queries keys') / math.sqrt(Q.shape[-1])
     
@@ -176,57 +180,49 @@ class LMHA(torch.nn.Module):
         if LMHA.rope_cache is None and theta is not None:
             LMHA.rope_cache = LROPE(theta, self.d_k, max_seq_len, device)
         if max_seq_len not in self.triu_cache:
-            self.triu_cache[max_seq_len] = torch.triu(torch.ones((max_seq_len, max_seq_len), dtype=torch.bool, device=device)).T
+            self.triu_cache[max_seq_len] = torch.triu(torch.ones((max_seq_len, max_seq_len), dtype=torch.bool, device=device)).T # casual mask
     
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None, kv_cache_slice_to: int | None = None) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         if kv_cache is not None:
             # using kv cache
-            # another latent assumption: if using kv cache, we only compute the last token's output; in the output, other token places are zeros as placeholders...
-            k_cache, v_cache = kv_cache # [B, L-1, D_M]
-            assert tuple(k_cache.shape) == (x.shape[0], x.shape[1]-1, x.shape[2])
-            assert tuple(v_cache.shape) == (x.shape[0], x.shape[1]-1, x.shape[2])
-            new_k = self.k_proj(x[:, -1:]) # [B, 1, D_M]
-            new_v = self.v_proj(x[:, -1:]) # [B, 1, D_M]
-            k = torch.concat([k_cache, new_k], dim=1) # [B, L, D_M]
-            v = torch.concat([v_cache, new_v], dim=1) # [B, L, D_M]
-            q = self.q_proj(x[:, -1:]) # [B, 1, D_M]
-        else:
-            # not using kv cache
-            k = self.k_proj(x)
-            v = self.v_proj(x)
-            q = self.q_proj(x)
-        q = rearrange(q, '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
-        kk = rearrange(k, '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_heads, d_k=self.d_k)
-        vv = rearrange(v, '... seqlen (h d_k) -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k)
+            k_cache, v_cache = kv_cache # [B, L-1, D_M']
+            assert k_cache.shape[0] == x.shape[0] and k_cache.shape[1] >= kv_cache_slice_to and k_cache.shape[2] == self.num_heads * self.d_k
+            assert v_cache.shape[0] == x.shape[0] and v_cache.shape[1] >= kv_cache_slice_to and v_cache.shape[2] == self.num_heads * self.d_k
+
+        q = self.q_proj(x)
+        new_k = self.k_proj(x)
+        new_v = self.v_proj(x)
+
         if (not self.nope) and self.theta and LMHA.rope_cache:
             if token_positions is not None:
                 token_positions = token_positions.unsqueeze(-1) # add head dim
             else:
                 token_positions = torch.arange(x.shape[1]).view(-1, 1) # default index for x
-            if kv_cache is not None:
-                # by latent assumption, q is of shape [B, 1, D_M]
-                q = LMHA.rope_cache(q, token_positions[:, -1:])
-            else:
-                q = LMHA.rope_cache(q, token_positions)
-            kk = LMHA.rope_cache(kk, token_positions)
-        q = rearrange(q, '... seqlen h d_k -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k) # [B, H, 1, D_K] or [B, H, L, D_K]
-        kk = rearrange(kk, '... seqlen h d_k -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k) # [B, H, L, D_K]
+            q = LMHA.rope_cache(q, token_positions)
+            new_k = LMHA.rope_cache(new_k, token_positions)
+        
+        if kv_cache is not None:
+            k = torch.concat([k_cache[:, :kv_cache_slice_to, :], new_k], dim=1) # [B, L, D_M']
+            v = torch.concat([v_cache[:, :kv_cache_slice_to, :], new_v], dim=1) # [B, L, D_M']
+        else:
+            k, v = new_k, new_v
+
+        q = rearrange(q, '... seqlen (h d_k) -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k) # [B, H, 1, D_K] or [B, H, L, D_K]
+        kk = rearrange(k, '... seqlen (h d_k) -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k) # [B, H, L, D_K]
+        vv = rearrange(v, '... seqlen (h d_k) -> ... h seqlen d_k', h=self.num_heads, d_k=self.d_k) # [B, H, L, D_K]
+
         if kv_cache is not None:
             # by latent assumption, q is of shape [B, 1, D_M] pointing to the last token place
-            before_proj = LNaiveSDPA(q, kk, vv, self.triu_cache[self.max_seq_len][x.shape[1]-1: x.shape[1], :x.shape[1]], padded_tokens)
+            before_proj = LNaiveSDPA(q, kk, vv, self.triu_cache[self.max_seq_len][kv_cache_slice_to: kv_cache_slice_to + x.shape[1], :kv_cache_slice_to + x.shape[1]], padded_tokens)
         else:
             before_proj = LNaiveSDPA(q, kk, vv, self.triu_cache[self.max_seq_len][:x.shape[1], :x.shape[1]], padded_tokens)
         before_proj = rearrange(before_proj, '... h seqlen d_k -> ... seqlen (h d_k)') # [B, L, D_M] or [B, 1, D_M]
         output = self.output_proj(before_proj)
-        if kv_cache is not None:
-            # by latent assumption, need to add dummy output
-            dummy = torch.zeros((output.shape[0], x.shape[1]-1, output.shape[2]), dtype=output.dtype, device=output.device)
-            output = torch.concat([dummy, output], dim=1)
         return output, (k, v)
 
 class LTransformerBlock(torch.nn.Module):
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, no_rms_norm: bool = False, post_norm: bool = False, nope: bool = False, silu: bool = False, compile: bool = True, custom_kernel: bool = False) -> None:
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, no_rms_norm: bool = False, post_norm: bool = False, nope: bool = False, silu: bool = False, compile: bool = False, custom_kernel: bool = False) -> None:
         super().__init__()
         self.no_rms_norm = no_rms_norm
         self.post_norm = post_norm
@@ -290,14 +286,14 @@ class LTransformerBlock(torch.nn.Module):
             del state_dict[k]
         return super()._load_from_state_dict(new_state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
     
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None, kv_cache_slice_to: int | None = None) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         # padded_tokens: torch.bool [B, T]
         if not self.post_norm:
-            attn_x, kv_cache = self.attn(self.ln1(x) if not self.no_rms_norm else x, token_positions, padded_tokens, kv_cache)
+            attn_x, kv_cache = self.attn(self.ln1(x) if not self.no_rms_norm else x, token_positions, padded_tokens, kv_cache, kv_cache_slice_to)
             t = x + attn_x
             return t + self.ffn(self.ln2(t) if not self.no_rms_norm else t), kv_cache
         else:
-            attn_x, kv_cache = self.attn(x, token_positions, padded_tokens, kv_cache)
+            attn_x, kv_cache = self.attn(x, token_positions, padded_tokens, kv_cache, kv_cache_slice_to)
             t = self.ln1(x + attn_x)
             return self.ln2(t + self.ffn(t)), kv_cache
 
@@ -313,6 +309,8 @@ class LTransformerLM(torch.nn.Module):
         if no_rms_norm or post_norm or nope or silu:
             print(f'Ablationed model architecture: no_rms_norm={no_rms_norm}, post_norm={post_norm}, nope={nope}, silu={silu}')
         assert not (no_rms_norm and post_norm), 'Cannot require both no_rms_norm and post_norm'
+
+        self.max_seq_len = context_length
 
         self.token_embeddings = LEmbedding(vocab_size, d_model, device, dtype)
         self.layers: list[LTransformerBlock] = nn.Sequential(*[LTransformerBlock(d_model, num_heads, d_ff, context_length, theta, device, dtype, no_rms_norm=no_rms_norm, post_norm=post_norm, nope=nope, silu=silu) for _ in range(num_layers)])
@@ -332,18 +330,25 @@ class LTransformerLM(torch.nn.Module):
         x = self.lm_head(x)
         return x # discard kv cache for now
 
-    def batch_generate(self, x: torch.Tensor, kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None, pad_token_id: int | None = None):
+    def batch_generate(self, x: torch.Tensor, kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None, pad_token_id: int | None = None, token_positions: torch.Tensor | None = None, kv_cache_sliced_to: int | None = None):
+        if kv_cache is not None:
+            assert token_positions is not None, "Need to provide token positions because x only contains the incremental indexes"
+            assert kv_cache_sliced_to is not None, "Need to provide kv_cache_sliced_to because kv_cache could contain extra tailing space"
         # changes to kv cache is in place
         padded_tokens = (x == pad_token_id)
-        token_positions = (torch.cumsum(x != pad_token_id, dim=1) - 1).clamp(min=0)
+        if token_positions is not None:
+            assert tuple(x.shape) == tuple(token_positions.shape), f"x and token_positions should match their shape: {tuple(x.shape)} == {tuple(token_positions.shape)}"
+            new_token_positions = token_positions
+        else:
+            new_token_positions = (torch.cumsum(x != pad_token_id, dim=1) - 1).clamp(min=0)
         x = self.token_embeddings(x, clamp_pad=pad_token_id is not None)
         new_kv_cache = []
         for i, layer in enumerate(self.layers):
             # print('layer', i)
             if kv_cache is not None:
-                x, new_layer_kvcache = layer(x, token_positions, padded_tokens, kv_cache[i])
+                x, new_layer_kvcache = layer(x, new_token_positions, padded_tokens, kv_cache[i], kv_cache_sliced_to)
             else:
-                x, new_layer_kvcache = layer(x, token_positions, padded_tokens)
+                x, new_layer_kvcache = layer(x, new_token_positions, padded_tokens)
             new_kv_cache.append(new_layer_kvcache)
         x = self.ln_final(x)
         x = self.lm_head(x)

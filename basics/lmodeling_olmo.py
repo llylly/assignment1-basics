@@ -26,8 +26,8 @@ class LOlmo2ROPE(torch.nn.Module):
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
         # same as LROPE, but apply this non-permute slicing (if False branch in LROPE)
-        x_even = x.view(-1, self.d_k)[:,:self.d_k // 2].view(list(x.shape[:-1]) + [self.d_k // 2])
-        x_odd = x.view(-1, self.d_k)[:,self.d_k // 2:].view(list(x.shape[:-1]) + [self.d_k // 2])
+        x_odd = x.view(x.shape[0], x.shape[1], x.shape[2] // self.d_k, self.d_k)[:, :, :, self.d_k // 2:]
+        x_even = x.view(x.shape[0], x.shape[1], x.shape[2] // self.d_k, self.d_k)[:, :, :, :self.d_k // 2]
 
         cos_even_x = self.cos_angles[token_positions].to(x.dtype) * x_even
         cos_odd_x = self.cos_angles[token_positions].to(x.dtype) * x_odd
@@ -36,6 +36,7 @@ class LOlmo2ROPE(torch.nn.Module):
 
         ans_even = cos_even_x + nsin_odd_x
         ans_odd = cos_odd_x + sin_even_x
+        # print(x.shape, x_odd.shape, x_even.shape, ans_odd.shape, ans_even.shape)
         ans = torch.stack([ans_even, ans_odd], dim=-1).contiguous().reshape(x.shape)
         return ans
 
@@ -87,50 +88,42 @@ class LOlmo2MHA(torch.nn.Module):
         if max_seq_len not in self.triu_cache:
             self.triu_cache[max_seq_len] = torch.triu(torch.ones((max_seq_len, max_seq_len), dtype=torch.bool, device=device)).T
     
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None, kv_cache_slice_to: int | None = None) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         if kv_cache is not None:
             # using kv cache
-            # another latent assumption: if using kv cache, we only compute the last token's output; in the output, other token places are zeros as placeholders...
             k_cache, v_cache = kv_cache # [B, L-1, D_M']
-            assert tuple(k_cache.shape) == (x.shape[0], x.shape[1]-1, self.num_key_value_heads * self.d_k)
-            assert tuple(v_cache.shape) == (x.shape[0], x.shape[1]-1, self.num_key_value_heads * self.d_k)
-            new_k = self.k_norm(self.k_proj(x[:, -1:])) # [B, 1, D_M']
-            new_v = self.v_proj(x[:, -1:]) # [B, 1, D_M']
-            k = torch.concat([k_cache, new_k], dim=1) # [B, L, D_M']
-            v = torch.concat([v_cache, new_v], dim=1) # [B, L, D_M']
-            q = self.q_norm(self.q_proj(x[:, -1:])) # [B, 1, D_M]
-        else:
-            # not using kv cache
-            k = self.k_norm(self.k_proj(x))
-            v = self.v_proj(x)
-            q = self.q_norm(self.q_proj(x))
-        q = rearrange(q, '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_attention_heads, d_k=self.d_k)
-        kk = rearrange(k, '... seqlen (h d_k) -> ... seqlen h d_k', h=self.num_key_value_heads, d_k=self.d_k)
-        vv = rearrange(v, '... seqlen (h d_k) -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k)
+            assert k_cache.shape[0] == x.shape[0] and k_cache.shape[1] >= kv_cache_slice_to and k_cache.shape[2] == self.num_key_value_heads * self.d_k
+            assert v_cache.shape[0] == x.shape[0] and v_cache.shape[1] >= kv_cache_slice_to and v_cache.shape[2] == self.num_key_value_heads * self.d_k
+        
+        q = self.q_norm(self.q_proj(x)) # [B, 1, D_M]
+        new_k = self.k_norm(self.k_proj(x)) # [B, 1, D_M']
+        new_v = self.v_proj(x) # [B, 1, D_M']
+
         if self.theta and LOlmo2MHA.rope_cache:
             if token_positions is not None:
                 token_positions = token_positions.unsqueeze(-1) # add head dim
             else:
                 token_positions = torch.arange(x.shape[1]).view(-1, 1) # default index for x
-            if kv_cache is not None:
-                # by latent assumption, q is of shape [B, 1, H_A, D_K]
-                q = LOlmo2MHA.rope_cache(q, token_positions[:, -1:])
-            else:
-                q = LOlmo2MHA.rope_cache(q, token_positions)
-            kk = LOlmo2MHA.rope_cache(kk, token_positions)
-        q = rearrange(q, '... seqlen (h i) d_k -> ... h i seqlen d_k', i=self.num_attention_heads // self.num_key_value_heads, h=self.num_key_value_heads, d_k=self.d_k) # [B, H_K, R, 1, D_K] or [B, H_K, R, L, D_K]
-        kk = rearrange(kk, '... seqlen h d_k -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k) # [B, H_K, 1, L, D_K]
+            q = LOlmo2MHA.rope_cache(q, token_positions)
+            new_k = LOlmo2MHA.rope_cache(new_k, token_positions)
+        
         if kv_cache is not None:
-            # by latent assumption, q is of shape [B, H_K, R, 1, D_K] pointing to the last token place
-            before_proj = LNaiveSDPA(q, kk, vv, self.triu_cache[self.max_seq_len][x.shape[1]-1: x.shape[1], :x.shape[1]], padded_tokens)
+            k = torch.concat([k_cache[:, :kv_cache_slice_to, :], new_k], dim=1) # [B, L, D_M']
+            v = torch.concat([v_cache[:, :kv_cache_slice_to, :], new_v], dim=1) # [B, L, D_M']
+        else:
+            k, v = new_k, new_v
+
+        q = rearrange(q, '... seqlen (h i d_k) -> ... h i seqlen d_k', i=self.num_attention_heads // self.num_key_value_heads, h=self.num_key_value_heads, d_k=self.d_k)
+        kk = rearrange(k, '... seqlen (h d_k) -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k)
+        vv = rearrange(v, '... seqlen (h d_k) -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k)
+
+        if kv_cache is not None:
+            # by latent assumption, q is of shape [B, H_K, R, 1 or L', D_K] pointing to the last token place
+            before_proj = LNaiveSDPA(q, kk, vv, self.triu_cache[self.max_seq_len][kv_cache_slice_to: kv_cache_slice_to + x.shape[1], :kv_cache_slice_to + x.shape[1]], padded_tokens)
         else:
             before_proj = LNaiveSDPA(q, kk, vv, self.triu_cache[self.max_seq_len][:x.shape[1], :x.shape[1]], padded_tokens)
         before_proj = rearrange(before_proj, '... h i seqlen d_k -> ... seqlen (h i d_k)') # [B, L, D_M] or [B, 1, D_M]
         output = self.o_proj(before_proj)
-        if kv_cache is not None:
-            # add dummy output to keep the shape a constant, but actually only the last token is inferred and valuable
-            dummy = torch.zeros((output.shape[0], x.shape[1]-1, output.shape[2]), dtype=output.dtype, device=output.device)
-            output = torch.concat([dummy, output], dim=1)
         return output, (k, v)
 
 class LOlmo2TransformerBlock(torch.nn.Module):
@@ -187,18 +180,19 @@ class LOlmo2TransformerBlock(torch.nn.Module):
             del state_dict[k]
         return super()._load_from_state_dict(new_state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
     
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None)-> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, padded_tokens: torch.Tensor | None = None, kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None, kv_cache_slice_to: int | None = None)-> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         # padded_tokens: torch.bool [B, T]
-        attn_x, kv_cache = self.self_attn(x, token_positions, padded_tokens, kv_cache)
+        attn_x, kv_cache = self.self_attn(x, token_positions, padded_tokens, kv_cache, kv_cache_slice_to)
         t = x + self.post_attention_layernorm(attn_x)
         return t + self.post_feedforward_layernorm(self.mlp(t)), kv_cache
 
 class LOlmo2TransformerLM(torch.nn.Module):
 
-    def __init__(self, hidden_size: int, intermediate_size: int, max_position_embeddings: int, num_attention_heads: int, num_hidden_layers: int, num_key_value_heads: int, rms_norm_eps: float, rope_theta: int, tie_word_embeddings: bool,vocab_size: int, device: torch.device | None = None, torch_dtype: torch.dtype | None = None) -> None:
+    def __init__(self, hidden_size: int, intermediate_size: int, max_position_embeddings: int, num_attention_heads: int, num_hidden_layers: int, num_key_value_heads: int, rms_norm_eps: float, rope_theta: int, tie_word_embeddings: bool, vocab_size: int, device: torch.device | None = None, torch_dtype: torch.dtype | None = None) -> None:
         super().__init__()
 
         self.vocab_size = vocab_size
+        self.max_seq_len = max_position_embeddings
 
         self.embed_tokens = LEmbedding(vocab_size, hidden_size, device, torch_dtype)
 
@@ -222,18 +216,25 @@ class LOlmo2TransformerLM(torch.nn.Module):
         x = self.lm_head(x)
         return x # discard kv cache for now
 
-    def batch_generate(self, x: torch.Tensor, kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None, pad_token_id: int | None = None):
+    def batch_generate(self, x: torch.Tensor, kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None, pad_token_id: int | None = None, token_positions: torch.Tensor | None = None, kv_cache_sliced_to: int | None = None):
+        if kv_cache is not None:
+            assert token_positions is not None, "Need to provide token positions because x only contains the incremental indexes"
+            assert kv_cache_sliced_to is not None, "Need to provide kv_cache_sliced_to because kv_cache could contain extra tailing space"
         # changes to kv cache is in place
         padded_tokens = (x == pad_token_id)
-        token_positions = (torch.cumsum(x != pad_token_id, dim=1) - 1).clamp(min=0)
+        if token_positions is not None:
+            assert tuple(x.shape) == tuple(token_positions.shape), "x and token_positions should match their shape"
+            new_token_positions = token_positions
+        else:
+            new_token_positions = (torch.cumsum(x != pad_token_id, dim=1) - 1).clamp(min=0)
         x = self.embed_tokens(x, clamp_pad=pad_token_id is not None)
         new_kv_cache = []
         for i, layer in enumerate(self.layers):
             # print('layer', i)
             if kv_cache is not None:
-                x, new_layer_kvcache = layer(x, token_positions, padded_tokens, kv_cache[i])
+                x, new_layer_kvcache = layer(x, new_token_positions, padded_tokens, kv_cache[i], kv_cache_sliced_to)
             else:
-                x, new_layer_kvcache = layer(x, token_positions, padded_tokens)
+                x, new_layer_kvcache = layer(x, new_token_positions, padded_tokens)
             new_kv_cache.append(new_layer_kvcache)
         x = self.norm(x)
         x = self.lm_head(x)

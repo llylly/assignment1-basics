@@ -70,15 +70,19 @@ def sampler(y: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0): # y:
 def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], tokenizer: LTokenizer,
              max_new_tokens: int = 256, temperature: float = 1.0, top_p: float = 1.0, device: str = 'cuda', 
              pad_token_id = -100, extra_stop_tokens: list[str] | None = None, include_stop_str_in_output=False, verbose=True) -> List[LCompletion]:
+    
+    # tokenize and left padding
     token_list = [tokenizer.encode(pp) for pp in prompts]
     max_token_len = max([len(item) for item in token_list])
     padded_token_list = [[pad_token_id] * (max_token_len - len(item)) + item for item in token_list]
     x = torch.tensor(padded_token_list, dtype=torch.long, device=device)
-    eof = tokenizer.encode(tokenizer.eos_token)[0] if tokenizer.eos_token else None # '<|endoftext|>'
+    token_positions = (torch.cumsum(x != pad_token_id, dim=1) - 1).clamp(min=0).to(x.device)
+
     if verbose: print(prompts)
     ys = [[] for _ in prompts]
     now_new_tokens = 0
 
+    input_len = x.shape[-1]
     tot_seq = x.shape[0]
     not_finished = torch.ones((tot_seq,), dtype=torch.bool, device=device)
     kv_cache: dict | None = None
@@ -86,23 +90,25 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
     if extra_stop_tokens is None:
         extra_stop_tokens = []
     stop_token_ids = [tokenizer.encode(item)[0] for item in extra_stop_tokens if len(tokenizer.encode(item)) == 1]
+    eof = tokenizer.encode(tokenizer.eos_token)[0] if tokenizer.eos_token else None # '<|endoftext|>'
     if eof:
         stop_token_ids = torch.tensor([eof] + stop_token_ids, device=device).view(1, -1)
         extra_stop_tokens.append(tokenizer.eos_token)
-
+    
     with torch.no_grad():
         while True:
-            max_seq_len = model.layers[0].attn.max_seq_len if isinstance(model, LTransformerLM) else model.layers[0].self_attn.max_seq_len
-            if now_new_tokens >= max_new_tokens or x.shape[-1] > max_seq_len:
+            max_seq_len: int = model.max_seq_len if isinstance(model, LTransformerLM) else model.max_seq_len
+            if now_new_tokens >= max_new_tokens or input_len + now_new_tokens > max_seq_len:
                 if verbose: print(f'!!! exceeds length: now new tokens = {now_new_tokens}, now ctx len = {x.shape[-1]}')
                 break
-            y, kv_cache = model.batch_generate(x, kv_cache=kv_cache, pad_token_id=pad_token_id)
+            y, kv_cache = model.batch_generate(x, kv_cache=kv_cache, pad_token_id=pad_token_id, token_positions=token_positions if kv_cache else None, kv_cache_sliced_to=input_len + now_new_tokens - 1)
             last_y = y[:, -1]
             pred_y = sampler(last_y, temperature, top_p)
-            x = torch.concat([x, pred_y], dim=1)
+            token_positions = token_positions[:, -1:] + torch.cumsum(pred_y != pad_token_id, dim=1)
+            x = pred_y # no concatenate any more, fully rely on kv_cache to store previous x's
             now_new_tokens += 1
 
-            new_finished = torch.any(pred_y == stop_token_ids, dim=1).view(-1)
+            new_finished = torch.any(pred_y == stop_token_ids, dim=1).to(x.device).view(-1)
 
             ii = 0
             for i in range(len(prompts)):
@@ -116,9 +122,11 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
                         pass
                     ii += 1
             
-            kv_cache = [(k[~new_finished], v[~new_finished]) for k,v in kv_cache]
-            x = x[~new_finished]
-            not_finished[not_finished.clone()] = ~new_finished
+            if any(new_finished):
+                kv_cache = [(k[~new_finished], v[~new_finished]) for k,v in kv_cache]
+                x = x[~new_finished]
+                token_positions = token_positions[~new_finished]
+                not_finished[not_finished.clone()] = ~new_finished
 
             if verbose: 
                 try:

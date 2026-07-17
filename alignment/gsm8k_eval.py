@@ -1,11 +1,13 @@
 from dataclasses import dataclass, field, asdict
 from typing import Literal
+import resource
 import os
 import json
 import tqdm
 import math
 import time
 from datetime import datetime
+import multiprocessing
 
 import tyro
 import wandb
@@ -42,6 +44,10 @@ if __name__ == '__main__':
     config = tyro.cli(EvalConfig)
     nowtime = datetime.now().strftime('_%Y%m%d_%H%M%S')
     run_name = f'gsm8k_test_{config.run_suffix}_{config.backend}_prompt_{config.prompt_type}_temp_{config.temperature}_n_{config.n}_max_new_tokens_{config.max_new_tokens}_{config.model_dir.replace("/", "-")}_{config.dtype}_bs_{config.batch_size}_{nowtime}'
+
+    # fuck antlr4
+    # soft, hard = resource.getrlimit(resource.RLIMIT_STACK)
+    resource.setrlimit(resource.RLIMIT_STACK, (1048576 * 1024, 1048576 * 1024))
 
     # wandb
     wandb.init(project='LLLM_eval_gsm8k_test', name=run_name, config=asdict(config), dir=os.path.join(config.save_dir, 'wandb_logs'))
@@ -98,11 +104,24 @@ if __name__ == '__main__':
             'continuations': continuations
         }
         grades = []
+        if config.prompt_type == 'r1_zero' or config.prompt_type == 'r1_zero_three_shot_gsm8k':
+            grade_fn = drgrpo_grader.r1_zero_reward_fn
+        elif config.prompt_type == 'question_only':
+            grade_fn = drgrpo_grader.question_only_reward_fn
+
         for i in range(config.n):
-            if config.prompt_type == 'r1_zero' or config.prompt_type == 'r1_zero_three_shot_gsm8k':
-                rewards = drgrpo_grader.r1_zero_reward_fn(finished['continuations'][i].text, final_answer, fast=False)
-            elif config.prompt_type == 'question_only':
-                rewards = drgrpo_grader.question_only_reward_fn(finished['continuations'][i].text, final_answer, fast=False)
+            # too slow
+            # p = multiprocessing.get_context('spawn').Process(target=grade_fn, args=(finished['continuations'][i].text, final_answer, False))
+            # p.start()
+            # try:
+            #     p.join(timeout=3)
+            #     assert (p.exitcode is not None) and p.exitcode == 0 # first check whether it can safely exit
+            #     rewards = grade_fn(finished['continuations'][i].text, final_answer, False)
+            # except Exception:
+            #     rewards = grade_fn(finished['continuations'][i].text, final_answer, True)
+            # p.close()
+            rewards = grade_fn(finished['continuations'][i].text, final_answer, False)
+
             # contains format_reward, answer_reward, reward
             rewards['stopped'] = float(int(finished['continuations'][i].finish_reason == 'stop'))
             rewards['ans_len'] = len(finished['continuations'][i].token_ids)
@@ -119,7 +138,7 @@ if __name__ == '__main__':
             passn[k] = max([item[k] for item in grades])
             avg_pass1[k] = (avg_pass1.get(k, 0.0) * now_cnt + pass1[k]) / (now_cnt + 1)
             avg_passn[k] = (avg_passn.get(k, 0.0) * now_cnt + passn[k]) / (now_cnt + 1)
-            print(f'{k:20}: now pass1 = {pass1[k]:5.2f} tot pass1 = {avg_pass1[k]:5.2f} now passn = {passn[k]:5.2f} tot passn = {avg_passn[k]:5.2f}')
+            print(f'{k:20}: now pass1 = {pass1[k]:5.3f} tot pass1 = {avg_pass1[k]:5.3f} now passn = {passn[k]:5.3f} tot passn = {avg_passn[k]:5.3f}')
         finished['pass1'] = pass1
         finished['passn'] = passn
 

@@ -1,5 +1,5 @@
 [project]
-name = "cs336_basics"
+name = "lllm"
 version = "26.0.0"
 description = "CS336 Assignment 1,2,5"
 readme = "README.md"
