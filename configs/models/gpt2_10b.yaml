@@ -1,0 +1,9 @@
+{
+    'num_layers': 50,
+    'd_model': 4608,
+    'num_heads': 36,
+    'd_ff': 12288, # 8/3 d_model ceil to 64
+    'vocab_size': 10000, #50257,
+    'context_length': 4096,
+    'theta': 10000,
+}

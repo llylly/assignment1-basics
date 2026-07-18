@@ -175,3 +175,4 @@ models/
 *.qdstrm
 memory_snapshot.pickle
 eval/
+!configs/models
