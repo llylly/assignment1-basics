@@ -742,12 +742,13 @@ def run_multihead_self_attention(
         implementation with the given QKV projection weights and input features.
     """
     from basics.lmodeling import LMHA
-    lmha = LMHA(d_model, num_heads, in_features.shape[-2])
+    lmha = LMHA(d_model, num_heads, num_heads, in_features.shape[-2])
     lmha.q_proj.weight.data = q_proj_weight
     lmha.k_proj.weight.data = k_proj_weight
     lmha.v_proj.weight.data = v_proj_weight
     lmha.output_proj.weight.data = o_proj_weight
-    return lmha(in_features)[0]
+    triu_cache = torch.triu(torch.ones((in_features.shape[-2], in_features.shape[-2]), dtype=torch.bool)).T
+    return lmha(in_features, triu_cache=triu_cache)[0]
 
 def run_multihead_self_attention_with_rope(
     d_model: int,
@@ -786,13 +787,15 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    from basics.lmodeling import LMHA
-    lmha = LMHA(d_model, num_heads, max_seq_len, theta)
+    from basics.lmodeling import LMHA, LROPE
+    lmha = LMHA(d_model, num_heads, num_heads, max_seq_len)
     lmha.q_proj.weight.data = q_proj_weight
     lmha.k_proj.weight.data = k_proj_weight
     lmha.v_proj.weight.data = v_proj_weight
     lmha.output_proj.weight.data = o_proj_weight
-    return lmha(in_features, token_positions)[0]
+    triu_cache = torch.triu(torch.ones((in_features.shape[-2], in_features.shape[-2]), dtype=torch.bool)).T
+    rope = LROPE(theta, d_model // num_heads, max_seq_len)
+    return lmha(in_features, token_positions, triu_cache=triu_cache, rope_cache=rope)[0]
 
 
 def run_rope(
@@ -889,10 +892,12 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    from basics.lmodeling import LTransformerBlock
-    transformer_block = LTransformerBlock(d_model, num_heads, d_ff, max_seq_len, theta)
+    from basics.lmodeling import LTransformerBlock, LROPE
+    transformer_block = LTransformerBlock(d_model, num_heads, num_heads, d_ff, max_seq_len)
     transformer_block.load_state_dict(weights)
-    return transformer_block(in_features)[0]
+    triu_cache = torch.triu(torch.ones((max_seq_len, max_seq_len), dtype=torch.bool)).T
+    rope = LROPE(theta, d_model // num_heads, max_seq_len)
+    return transformer_block(in_features, triu_cache=triu_cache, rope_cache=rope)[0]
 
 
 def run_transformer_lm(
@@ -977,7 +982,7 @@ def run_transformer_lm(
     from basics.lmodeling import LTransformerLM
     lm = LTransformerLM(d_model, num_heads, d_ff, context_length, vocab_size, num_layers, rope_theta)
     lm.load_state_dict(weights)
-    return lm.forward(in_indices)
+    return lm(in_indices)
 
 
 def run_rmsnorm(

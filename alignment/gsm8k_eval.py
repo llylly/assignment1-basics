@@ -60,7 +60,7 @@ def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbo
     if eval_config.backend == 'vllm':
         if not eval_config.vllm_server_no_host:
             serv_proc = vllm_utils.start_server(eval_config.model_dir, eval_config.vllm_ip, eval_config.vllm_port, eval_config.dtype, 0, 42, "auto", 'INFO')
-            vllm_utils.wait_for_server(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', serv_proc, 60)
+            vllm_utils.wait_for_server(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', serv_proc, 300)
     elif eval_config.backend == 'native':
         model, tokenizer = lmodeling_olmo.from_pretrained(eval_config.model_dir, eval_config.dtype)
 
@@ -96,6 +96,7 @@ def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbo
             
             finished = {
                 'question': item['question'],
+                'prompt': templated_question,
                 'answer': item['answer'],
                 'final_answer': final_answer,
                 'continuations': continuations
@@ -148,6 +149,9 @@ def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbo
         if eval_config.backend == 'vllm' and not eval_config.vllm_server_no_host:
             vllm_utils.stop_server(serv_proc)
         return
+    
+    if eval_config.backend == 'vllm' and not eval_config.vllm_server_no_host:
+            vllm_utils.stop_server(serv_proc)
     
     if dump_file:
         if not os.path.exists(eval_config.save_dir):

@@ -1,14 +1,15 @@
 from alignment import vllm_utils
 
-MODEL_DIR = 'models/OLMo-2-0425-1B'
+# MODEL_DIR = 'models/OLMo-2-0425-1B'
+MODEL_DIR = 'models/SmolLM-1.7B'
 
 if __name__ == '__main__':
-    serv_proc = vllm_utils.start_server(MODEL_DIR, '127.0.0.1', 8080, 0, 42, "auto", 'INFO')
+    serv_proc = vllm_utils.start_server(MODEL_DIR, '127.0.0.1', 8080, 'bfloat16', 0, 42, "auto", 'INFO')
     vllm_utils.wait_for_server('http://127.0.0.1:8080', serv_proc, 60)
     try:
         while True:
             prompt = input('prompt: ')
-            ret = vllm_utils.generate_completions('http://127.0.0.1:8080', 'models/OLMo-2-0425-1B', [prompt], {
+            ret = vllm_utils.generate_completions('http://127.0.0.1:8080', MODEL_DIR, [prompt], {
                 'temperature': 0,
                 'max_tokens': 512,
                 'n': 1,
