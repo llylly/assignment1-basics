@@ -188,9 +188,9 @@ if __name__ == '__main__':
                     'train/token_trained': tot_token_trained}
         print(','.join(f'{k}: {v:.2f}' for k, v in train_info.items()))
         if config.debug:
-            train_info['train/debug/act_norms'] = act_norms
+            train_info['stats/act_norms'] = act_norms
             if grad_norms is not None:
-                train_info['train/debug/grad_norms'] = grad_norms
+                train_info['stats/grad_norms'] = grad_norms
         wandb.log(train_info, step=now_step)
         
         if val_dataset is not None and (now_step % config.val_step == 0 or now_step == config.trainer.tot_steps - 1):
