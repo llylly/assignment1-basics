@@ -15,5 +15,7 @@
     "beta1": 0.9,
     "beta2": 0.99,
     "weight_decay": 0.1
-  }
+  },
+  "val_step": 5000,
+  "save_step": 5000
 }

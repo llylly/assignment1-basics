@@ -50,6 +50,8 @@ class MainConfig:
     """run_name is appended to both save_path and wandb"""
     val_step: int = 1000
     save_step: int = 1000
+    debug: bool = False 
+    """if debug, dump more statistics (act norm, grad norm per layer) on wandb"""
 
 """
 Example Usage:
@@ -157,7 +159,10 @@ if __name__ == '__main__':
         x, y = LGetBatch(dataset, config.trainer.batch_size, config.trainer.seqlen, config.device)
         x = x.type(torch.long)
         y = y.type(torch.long)
-        y_pred = model(x)
+        if config.debug:
+            y_pred, act_norms = model(x, dump_act_norm=True)
+        else:
+            y_pred = model(x)
         loss = LCrossEntropy(y_pred, y)
         print(now_step, 'train loss =', loss.item())
         # update learning rate according to cosine scheduler
@@ -166,7 +171,10 @@ if __name__ == '__main__':
         if now_step % config.trainer.accum_steps == 0:
             optimizer.zero_grad()
         (loss / config.trainer.accum_steps).backward() # critical fix
+        grad_norms = None
         if now_step % config.trainer.accum_steps == 0:
+            if config.debug:
+                grad_norms = model.compute_layer_grad_norms()
             if config.trainer.gradient_clipping is not None:
                 grad_norm = LGradientClipping(model.parameters(), config.trainer.gradient_clipping)
             optimizer.step()
@@ -179,6 +187,10 @@ if __name__ == '__main__':
                     'train/tokens_per_sec': (now_step - start_iter) * stats['stat_batch_token'] / (time.time() - stime),
                     'train/token_trained': tot_token_trained}
         print(','.join(f'{k}: {v:.2f}' for k, v in train_info.items()))
+        if config.debug:
+            train_info['train/debug/act_norms'] = act_norms
+            if grad_norms is not None:
+                train_info['train/debug/grad_norms'] = grad_norms
         wandb.log(train_info, step=now_step)
         
         if val_dataset is not None and (now_step % config.val_step == 0 or now_step == config.trainer.tot_steps - 1):

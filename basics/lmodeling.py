@@ -14,10 +14,10 @@ INF_MIN = -1e+20
 
 class LLinear(torch.nn.Module):
 
-    def __init__(self, in_features: int, out_features: int, device: torch.device | None = None, dtype: torch.dtype | None=None):
+    def __init__(self, in_features: int, out_features: int, device: torch.device | None = None, dtype: torch.dtype | None=None, std_multiplier: float=1.0):
         super().__init__()
         W_tensor = torch.empty((out_features, in_features), device=device, dtype=dtype)
-        std = math.sqrt(2. / (in_features+out_features))
+        std = math.sqrt(std_multiplier * 2. / (in_features+out_features))
         nn.init.trunc_normal_(W_tensor, mean=0., std=std, a=-3.*std, b=3.*std)
         self.weight = nn.Parameter(W_tensor)
     
@@ -369,6 +369,7 @@ class LTransformerLM(torch.nn.Module):
         if no_rms_norm or post_norm or nope or silu:
             print(f'Ablationed model architecture: no_rms_norm={no_rms_norm}, post_norm={post_norm}, nope={nope}, silu={silu}')
         assert not (no_rms_norm and post_norm), 'Cannot require both no_rms_norm and post_norm'
+        assert not (partial_post_norm and post_norm), 'Cannot require both partial_post_norm and post_norm'
 
         if param_maps is None: param_maps = {}
         for k in ['token_embeddings', 'layers', 'ln_final', 'lm_head']:
@@ -376,7 +377,7 @@ class LTransformerLM(torch.nn.Module):
         self.param_maps = param_maps
 
         setattr(self, self.param_maps['token_embeddings'], LEmbedding(vocab_size, d_model, device, dtype))
-        setattr(self, self.param_maps['layers'], nn.Sequential(*[LTransformerBlock(d_model, num_heads, num_heads, d_ff, context_length, device, dtype, no_rms_norm=no_rms_norm, post_norm=post_norm, silu=silu, partial_post_norm=partial_post_norm) if customized_layer_constructor is None else customized_layer_constructor() for _ in range(num_layers)]))
+        setattr(self, self.param_maps['layers'], nn.Sequential(*[LTransformerBlock(d_model, num_heads, num_heads, d_ff, context_length, device, dtype, rms_norm_eps=rms_norm_eps, no_rms_norm=no_rms_norm, post_norm=post_norm, silu=silu, partial_post_norm=partial_post_norm) if customized_layer_constructor is None else customized_layer_constructor() for _ in range(num_layers)]))
         if rms_norm_eps is not None:
             norm_eps = {'eps': rms_norm_eps}
         else:
@@ -392,15 +393,42 @@ class LTransformerLM(torch.nn.Module):
             self.rope_cache = LROPE(theta, d_model // num_heads, self.max_seq_len, interleave_rope, device)
         self.register_buffer('triu_cache', torch.triu(torch.ones((self.max_seq_len, self.max_seq_len), dtype=torch.bool, device=device)).T, persistent=False) # casual mask
     
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, dump_act_norm: bool = False) -> torch.Tensor:
         x = getattr(self, self.param_maps['token_embeddings'])(x)
         kv_caches = []
+        act_norm = {}
+        layer_no = 0
         for layer in getattr(self, self.param_maps['layers']):
-            x, kv = layer(x, token_positions, rope_cache=self.rope_cache, triu_cache=self.triu_cache) # TODO: Doesn't consider potential padded tokens which might need to put in
+            new_x, kv = layer(x, token_positions, rope_cache=self.rope_cache, triu_cache=self.triu_cache) # TODO: Doesn't consider potential padded tokens which might need to put in
+            if dump_act_norm:
+                act_norm[layer_no] = {
+                    'layer_act_norm': torch.linalg.vector_norm(new_x - x, ord=2, dim=-1).mean().item(),
+                    'layer_res_norm': torch.linalg.vector_norm(new_x, ord=2, dim=-1).mean().item()
+                }
+            x = new_x
             kv_caches.append(kv)
+            layer_no += 1
         x = getattr(self, self.param_maps['ln_final'])(x) if getattr(self, self.param_maps['ln_final']) else x
         x = getattr(self, self.param_maps['lm_head'])(x)
-        return x # discard kv cache for now
+        if dump_act_norm:
+            return x, act_norm # discard kv cache for now
+        else:
+            return x # discard kv cache for now
+    
+    def compute_layer_grad_norms(self) -> dict[int, float]:
+        ret = {}
+        layer_no = 0
+        for layer in getattr(self, self.param_maps['layers']):
+            now_norm = None
+            for param in layer.parameters():
+                if param.grad is not None:
+                    if now_norm is None: 
+                        now_norm = torch.sum(param.grad * param.grad) 
+                    else: now_norm += torch.sum(param.grad * param.grad)
+            now_norm = now_norm.sqrt().item()
+            ret[layer_no] = now_norm
+            layer_no += 1
+        return ret
 
     def batch_generate(self, x: torch.Tensor, kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None, pad_token_id: int | None = None, token_positions: torch.Tensor | None = None, kv_cache_sliced_to: int | None = None, padded_tokens: torch.Tensor | None = None):
         # Note: padded_tokens should be of the shape [Batch, keys] at the globally scale, where keys = kv_cache's length dim + x length dim, i.e., it's a global mask
