@@ -1,5 +1,5 @@
 {
-  "model_config": "configs/models/gpt2_small_owt_partial_post_norm.yaml",
+  "model_config": "configs/models/gpt2_small_owt_olmo.yaml",
   "data": "data/owt_train.tokenized.npy",
   "val_data": "data/owt_valid.tokenized.npy",
   "save_path": "models/owt_small",

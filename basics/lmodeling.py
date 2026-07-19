@@ -366,6 +366,7 @@ class LTransformerLM(torch.nn.Module):
         partial_post_norm = self.customizations.get('partial_post_norm', False)
         nope = self.customizations.get('nope', False)
         silu = self.customizations.get('silu', False)
+        qk_norm = self.customizations.get('qk_norm', False)
         if no_rms_norm or post_norm or nope or silu:
             print(f'Ablationed model architecture: no_rms_norm={no_rms_norm}, post_norm={post_norm}, nope={nope}, silu={silu}')
         assert not (no_rms_norm and post_norm), 'Cannot require both no_rms_norm and post_norm'
@@ -377,7 +378,7 @@ class LTransformerLM(torch.nn.Module):
         self.param_maps = param_maps
 
         setattr(self, self.param_maps['token_embeddings'], LEmbedding(vocab_size, d_model, device, dtype))
-        setattr(self, self.param_maps['layers'], nn.Sequential(*[LTransformerBlock(d_model, num_heads, num_heads, d_ff, context_length, device, dtype, rms_norm_eps=rms_norm_eps, no_rms_norm=no_rms_norm, post_norm=post_norm, silu=silu, partial_post_norm=partial_post_norm) if customized_layer_constructor is None else customized_layer_constructor() for _ in range(num_layers)]))
+        setattr(self, self.param_maps['layers'], nn.Sequential(*[LTransformerBlock(d_model, num_heads, num_heads, d_ff, context_length, device, dtype, rms_norm_eps=rms_norm_eps, no_rms_norm=no_rms_norm, post_norm=post_norm, silu=silu, partial_post_norm=partial_post_norm, attn_qk_norm=qk_norm) if customized_layer_constructor is None else customized_layer_constructor() for _ in range(num_layers)]))
         if rms_norm_eps is not None:
             norm_eps = {'eps': rms_norm_eps}
         else:

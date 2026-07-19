@@ -7,6 +7,7 @@
     'context_length': 4096,
     'theta': 10000,
     'customizations': {
-        'partial_post_norm': true
+        'partial_post_norm': true,
+        'qk_norm': true
     }
 }
