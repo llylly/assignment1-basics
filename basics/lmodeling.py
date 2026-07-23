@@ -167,7 +167,7 @@ def LNaiveSDPA(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Te
 
 class LMHA(torch.nn.Module):
 
-    def __init__(self, d_model: int, num_attention_heads: int, num_key_value_heads: int, max_seq_len: int, device: torch.device | None = None, dtype: torch.dtype | None = None, qk_norm: bool = False, qk_norm_rms_eps: float | None=None, param_maps: dict | None=None):
+    def __init__(self, d_model: int, num_attention_heads: int, num_key_value_heads: int, max_seq_len: int, device: torch.device | None = None, dtype: torch.dtype | None = None, qk_norm: bool = False, qk_norm_rms_eps: float | None=None, require_kv_cache: bool=True, flash_attn: bool=False, param_maps: dict | None=None):
         super().__init__()
 
         self._KVCACHE_BLOCKSIZE = 512
@@ -178,6 +178,9 @@ class LMHA(torch.nn.Module):
         self.d_k = self.d_model // self.num_attention_heads
         self.max_seq_len = max_seq_len
         self.qk_norm = qk_norm
+
+        self.require_kv_cache = require_kv_cache
+        self.flash_attn = flash_attn
 
         if param_maps is None: param_maps = {}
         self.param_maps = param_maps
@@ -246,7 +249,8 @@ class LMHA(torch.nn.Module):
 
         if kv_cache is not None:
             # by latent assumption, q is of shape [B, 1, D_M] pointing to the last token place
-            before_proj = LNaiveSDPA(q, kk, vv, triu_cache[kv_cache_slice_to: kv_cache_slice_to + x.shape[1], :kv_cache_slice_to + x.shape[1]], padded_tokens)
+            # actually triu_cache that get passed in is an all 1 masking matrix
+            before_proj = LNaiveSDPA(q, kk, vv, None, padded_tokens)
         else:
             before_proj = LNaiveSDPA(q, kk, vv, triu_cache[:x.shape[1], :x.shape[1]], padded_tokens)
         before_proj = rearrange(before_proj, '... h i seqlen d_k -> ... seqlen (h i d_k)') # [B, L, D_M] or [B, 1, D_M]
@@ -255,7 +259,7 @@ class LMHA(torch.nn.Module):
 
 class LTransformerBlock(torch.nn.Module):
 
-    def __init__(self, d_model: int, num_attention_heads: int, num_key_value_heads: int, d_ff: int, max_seq_len: int, device: torch.device | None = None, dtype: torch.dtype | None = None, no_rms_norm: bool = False, post_norm: bool = False, partial_post_norm: bool = False, silu: bool = False, rms_norm_eps: float | None = None, compile: bool = True, custom_kernel: bool = False, attn_qk_norm: bool=False, param_maps: dict | None = None, attn_param_maps: dict | None = None, ffn_param_maps: dict | None = None) -> None:
+    def __init__(self, d_model: int, num_attention_heads: int, num_key_value_heads: int, d_ff: int, max_seq_len: int, device: torch.device | None = None, dtype: torch.dtype | None = None, no_rms_norm: bool = False, post_norm: bool = False, partial_post_norm: bool = False, silu: bool = False, rms_norm_eps: float | None = None, compile: bool = True, custom_kernel: bool = False, flash_attn: bool = False, attn_qk_norm: bool=False, require_kv_cache: bool=True, param_maps: dict | None = None, attn_param_maps: dict | None = None, ffn_param_maps: dict | None = None) -> None:
         super().__init__()
         self.no_rms_norm = no_rms_norm
         self.post_norm = post_norm
@@ -266,6 +270,7 @@ class LTransformerBlock(torch.nn.Module):
 
         assert not (post_norm and partial_post_norm), "Cannot be both post_norm and partial_post_norm!"
         assert not (compile and custom_kernel), "Cannot use both compile and custom_kernel!"
+        assert not (custom_kernel and flash_attn), "Cannot use both custom_kernel and flash_attn!"
 
         self._compile = compile
         self._custom_kernel = custom_kernel
@@ -293,7 +298,7 @@ class LTransformerBlock(torch.nn.Module):
                 setattr(self, self.param_maps['ln1'], LRMSNormFast(d_model, device=device, dtype=dtype, **norm_eps))
                 setattr(self, self.param_maps['ln2'], LRMSNormFast(d_model, device=device, dtype=dtype, **norm_eps))
 
-        setattr(self, self.param_maps['attn'], LMHA(d_model, num_attention_heads, num_key_value_heads, max_seq_len, device, dtype, attn_qk_norm, qk_norm_rms_eps=rms_norm_eps, param_maps=attn_param_maps))
+        setattr(self, self.param_maps['attn'], LMHA(d_model, num_attention_heads, num_key_value_heads, max_seq_len, device, dtype, attn_qk_norm, require_kv_cache=require_kv_cache, flash_attn=flash_attn, qk_norm_rms_eps=rms_norm_eps, param_maps=attn_param_maps))
         setattr(self, self.param_maps['ffn'], LFFN(d_model, d_ff, device, dtype, silu=silu, param_maps=ffn_param_maps))
 
         if getattr(self, self.param_maps['ln1']) and getattr(self, self.param_maps['ln2']) and compile:
@@ -354,7 +359,7 @@ class LTransformerBlock(torch.nn.Module):
 
 class LTransformerLM(torch.nn.Module):
 
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, context_length: int, vocab_size: int, num_layers: int, theta: float | None = None, rms_norm_eps: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, customizations: dict | None = None, interleave_rope: bool = True, customized_layer_constructor: Callable | None = None, param_maps: dict | None = None) -> None:
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, context_length: int, vocab_size: int, num_layers: int, theta: float | None = None, rms_norm_eps: float | None = None, device: torch.device | None = None, dtype: torch.dtype | None = None, customizations: dict | None = None, interleave_rope: bool = True, flash_attn: bool = False, require_kv_cache: bool=True, customized_layer_constructor: Callable | None = None, param_maps: dict | None = None) -> None:
         super().__init__()
 
         self.vocab_size = vocab_size
@@ -378,7 +383,7 @@ class LTransformerLM(torch.nn.Module):
         self.param_maps = param_maps
 
         setattr(self, self.param_maps['token_embeddings'], LEmbedding(vocab_size, d_model, device, dtype))
-        setattr(self, self.param_maps['layers'], nn.Sequential(*[LTransformerBlock(d_model, num_heads, num_heads, d_ff, context_length, device, dtype, rms_norm_eps=rms_norm_eps, no_rms_norm=no_rms_norm, post_norm=post_norm, silu=silu, partial_post_norm=partial_post_norm, attn_qk_norm=qk_norm) if customized_layer_constructor is None else customized_layer_constructor() for _ in range(num_layers)]))
+        setattr(self, self.param_maps['layers'], nn.Sequential(*[LTransformerBlock(d_model, num_heads, num_heads, d_ff, context_length, device, dtype, rms_norm_eps=rms_norm_eps, no_rms_norm=no_rms_norm, post_norm=post_norm, silu=silu, partial_post_norm=partial_post_norm, attn_qk_norm=qk_norm, require_kv_cache=require_kv_cache, flash_attn=flash_attn) if customized_layer_constructor is None else customized_layer_constructor() for _ in range(num_layers)]))
         if rms_norm_eps is not None:
             norm_eps = {'eps': rms_norm_eps}
         else:

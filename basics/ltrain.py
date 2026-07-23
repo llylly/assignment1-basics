@@ -89,8 +89,16 @@ Still search for best lr for SGD:
 uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.opt_type sgd --run_name sgd # need much larger lr, such as 0.01
 uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny.yaml --trainer.opt_type sgd --trainer.learning_rate 0.03 --run_name sgd_lr_3e-2 
 
-ML system optimization group: [ongoing]
+ML system optimization group:
 uv run python basics/ltrain.py --config_path configs/main_config_ts_small.yaml --save_path models/speedopt_ts_small
+
+Final best setting:
+[30min, valloss 1.356, 22M, 0.5B tokens]
+uv run python basics/ltrain.py --config_path configs/main_config_ts_tiny_olmo.yaml 
+[12h, valloss 3.45, 135M, 2.8B tokens]
+uv run python basics/ltrain.py --config_path configs/main_config_owt_small_olmo.yaml
+[30h, valloss 3.41, 300M, 2.8B tokens]
+uv run python basics/ltrain.py --config_path configs/main_config_owt_medium_olmo.yaml
 """
 
 if __name__ == '__main__':
@@ -120,7 +128,7 @@ if __name__ == '__main__':
     with open(config.model_config, 'r') as f:
         model_config = yaml.safe_load(f)
     dtype = {'bfloat16': torch.bfloat16, 'float32': torch.float}[config.dtype]
-    model_config |= {'device': config.device, 'dtype': dtype}
+    model_config |= {'device': config.device, 'dtype': dtype, 'require_kv_cache': False}
     model = LTransformerLM(**model_config)
     if config.trainer.opt_type == 'adam':
         optimizer = LAdamW(model.parameters(), config.trainer.learning_rate, (config.trainer.beta1, config.trainer.beta2), config.trainer.weight_decay)
