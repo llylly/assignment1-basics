@@ -162,6 +162,7 @@ Example Usage:
 uv run python basics/linference.py --config_path configs/gen_config_ts_small.yaml --model_path models/ts_small_20260701_001346/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 1.0 --flash-attn
 uv run python basics/linference.py --config_path configs/gen_config_ts_tiny.yaml --model_path models/ts_tiny_20260701_175105/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 0.0 --flash-attn
 uv run python basics/linference.py --config_path configs/gen_config_owt_small.yaml --model_path models/owt_small_20260702_035910/step_164999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 1.0 --flash-attn
+uv run python basics/linference.py --config_path configs/gen_config_ts_tiny_olmo.yaml --model_path models/ts_tiny_20260723_000227/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 0.0 --flash-attn
 """
 
 if __name__ == '__main__':
