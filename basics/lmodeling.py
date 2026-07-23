@@ -1,5 +1,6 @@
 import math
 from typing import Any, Mapping, Callable
+from dataclasses import dataclass
 import torch
 from torch import nn
 from einops import rearrange, einsum
@@ -11,6 +12,15 @@ use_nvtx = True
 range_ctx = nvtx.range if use_nvtx else lambda _: nullcontext()
 
 INF_MIN = -1e+20
+
+@dataclass
+class LCausalLMOutput:
+    logits: torch.Tensor
+    past_key_values: list[torch.Tensor] | None = None
+    loss = None
+    hidden_states: list[torch.Tensor] | None = None
+    attentions: list[torch.Tensor] | None = None
+    activation_norms: dict | None = None
 
 class LLinear(torch.nn.Module):
 
@@ -248,7 +258,7 @@ class LMHA(torch.nn.Module):
         vv = rearrange(v, 'seqlen ... (h d_k) -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k)
 
         if self.flash_attn:
-            from systems.call_flash_attn import CallFlashAttn
+            from systems.lcall_flash_attn import CallFlashAttn
             spda_fn = CallFlashAttn
         else:
             spda_fn = LNaiveSDPA
@@ -405,7 +415,7 @@ class LTransformerLM(torch.nn.Module):
             self.rope_cache = LROPE(theta, d_model // num_heads, self.max_seq_len, interleave_rope, device)
         self.register_buffer('triu_cache', torch.triu(torch.ones((self.max_seq_len, self.max_seq_len), dtype=torch.bool, device=device)).T, persistent=False) # casual mask
     
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, dump_act_norm: bool = False) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None, dump_act_norm: bool = False, dump_kv_cache: bool=False) -> LCausalLMOutput:
         x = getattr(self, self.param_maps['token_embeddings'])(x)
         kv_caches = []
         act_norm = {}
@@ -422,10 +432,7 @@ class LTransformerLM(torch.nn.Module):
             layer_no += 1
         x = getattr(self, self.param_maps['ln_final'])(x) if getattr(self, self.param_maps['ln_final']) else x
         x = getattr(self, self.param_maps['lm_head'])(x)
-        if dump_act_norm:
-            return x, act_norm # discard kv cache for now
-        else:
-            return x # discard kv cache for now
+        return LCausalLMOutput(logits=x, activation_norms=act_norm if dump_act_norm else None, past_key_values=kv_caches if dump_kv_cache else None)
     
     def compute_layer_grad_norms(self) -> dict[int, float]:
         ret = {}

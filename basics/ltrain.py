@@ -13,7 +13,7 @@ from datetime import datetime
 from tqdm import tqdm
 
 from basics.ltrain_utils import load_checkpoint, save_checkpoint, dict_to_dataclass, LGetBatch
-from basics.lmodeling import LTransformerLM
+from basics.lmodeling import LTransformerLM, LCausalLMOutput
 from basics.lopt import LAdamW, LSGD, LCosineLR, LCrossEntropy, LGradientClipping
 
 @dataclass
@@ -168,9 +168,10 @@ if __name__ == '__main__':
         x = x.type(torch.long)
         y = y.type(torch.long)
         if config.debug:
-            y_pred, act_norms = model(x, dump_act_norm=True)
+            ret: LCausalLMOutput = model(x, dump_act_norm=True)
+            y_pred, act_norms = ret.logits, ret.activation_norms
         else:
-            y_pred = model(x)
+            y_pred = model(x).logits
         loss = LCrossEntropy(y_pred, y)
         print(now_step, 'train loss =', loss.item())
         # update learning rate according to cosine scheduler

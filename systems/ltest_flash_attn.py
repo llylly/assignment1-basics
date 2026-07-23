@@ -1,6 +1,6 @@
 import torch
 from basics.lmodeling import LNaiveSDPA
-from call_flash_attn import CallFlashAttn
+from systems.lcall_flash_attn import CallFlashAttn
 
 # q: [B,H,I,L,D] or [B,H,1,L,D]
 # k & v: [B,H,1,L,D]

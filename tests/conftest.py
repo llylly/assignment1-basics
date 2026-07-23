@@ -1,5 +1,6 @@
 import os
 import pickle
+import hashlib
 from pathlib import Path
 
 from typing import TypeVar
