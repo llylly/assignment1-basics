@@ -62,7 +62,7 @@ def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbo
             serv_proc = vllm_utils.start_server(eval_config.model_dir, eval_config.vllm_ip, eval_config.vllm_port, eval_config.dtype, 0, 42, "auto", 'INFO')
             vllm_utils.wait_for_server(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', serv_proc, 300)
     elif eval_config.backend == 'native':
-        model, tokenizer = lmodeling_olmo.from_pretrained(eval_config.model_dir, eval_config.dtype)
+        model, tokenizer = lmodeling_olmo.from_pretrained(eval_config.model_dir, eval_config.dtype, flash_attn=False) # for gsm8k, I don't see much benefit of using flash attn
 
 
     all_finished = []
