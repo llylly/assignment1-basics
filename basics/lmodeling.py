@@ -247,12 +247,18 @@ class LMHA(torch.nn.Module):
         kk = rearrange(k, 'seqlen ... (h d_k) -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k)
         vv = rearrange(v, 'seqlen ... (h d_k) -> ... h 1 seqlen d_k', h=self.num_key_value_heads, d_k=self.d_k)
 
+        if self.flash_attn:
+            from systems.call_flash_attn import CallFlashAttn
+            spda_fn = CallFlashAttn
+        else:
+            spda_fn = LNaiveSDPA
+
         if kv_cache is not None:
             # by latent assumption, q is of shape [B, 1, D_M] pointing to the last token place
             # actually triu_cache that get passed in is an all 1 masking matrix
-            before_proj = LNaiveSDPA(q, kk, vv, None, padded_tokens)
+            before_proj = spda_fn(q, kk, vv, None, padded_tokens)
         else:
-            before_proj = LNaiveSDPA(q, kk, vv, triu_cache[:x.shape[1], :x.shape[1]], padded_tokens)
+            before_proj = spda_fn(q, kk, vv, triu_cache[:x.shape[1], :x.shape[1]], padded_tokens)
         before_proj = rearrange(before_proj, '... h i seqlen d_k -> ... seqlen (h i d_k)') # [B, L, D_M] or [B, 1, D_M]
         output = getattr(self, self.param_maps['output_proj'])(before_proj)
         return output, (k_cache, v_cache)

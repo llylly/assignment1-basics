@@ -221,7 +221,7 @@ if __name__ == '__main__':
         
         if now_step % config.save_step == 0 or now_step == config.trainer.tot_steps - 1:
             print('saving...')
-            save_checkpoint(model, optimizer, now_step, os.path.join(config.save_path, f'step_{now_step}.pth'))
+            save_checkpoint(model, optimizer, now_step, os.path.join(config.save_path, f'step_{now_step:07}.pth'))
         
         if now_step == config.trainer.tot_steps - 1:
             with open(os.path.join(config.save_path, 'final.log'), 'w') as f:

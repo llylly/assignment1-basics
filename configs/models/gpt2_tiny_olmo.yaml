@@ -9,5 +9,6 @@
     'customizations': {
         'partial_post_norm': true,
         'qk_norm': true
-    }
+    },
+    'flash_attn': true
 }

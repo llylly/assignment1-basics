@@ -37,6 +37,7 @@ class MainConfig:
     special_token: str = '<|endoftext|>'
     device: str = 'cuda'
     dtype: Literal['bfloat16', 'float32'] = 'bfloat16'
+    flash_attn: bool = False
 
 
 @dataclass
@@ -158,9 +159,9 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
 
 """
 Example Usage:
-uv run python basics/linference.py --config_path configs/gen_config_ts_small.yaml --model_path models/ts_small_20260701_001346/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 1.0
-uv run python basics/linference.py --config_path configs/gen_config_ts_tiny.yaml --model_path models/ts_tiny_20260701_175105/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 0.0
-uv run python basics/linference.py --config_path configs/gen_config_owt_small.yaml --model_path models/owt_small_20260702_035910/step_164999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 1.0
+uv run python basics/linference.py --config_path configs/gen_config_ts_small.yaml --model_path models/ts_small_20260701_001346/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 1.0 --flash-attn
+uv run python basics/linference.py --config_path configs/gen_config_ts_tiny.yaml --model_path models/ts_tiny_20260701_175105/step_65999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 0.0 --flash-attn
+uv run python basics/linference.py --config_path configs/gen_config_owt_small.yaml --model_path models/owt_small_20260702_035910/step_164999.pth --prompts "You're so beautiful!" "Bob and Alice are playing a game" --temperature 1.0 --flash-attn
 """
 
 if __name__ == '__main__':
@@ -181,7 +182,7 @@ if __name__ == '__main__':
     with open(config.model_config, 'r') as f:
         model_config = yaml.safe_load(f)
     dtype = {'bfloat16': torch.bfloat16, 'float32': torch.float}[config.dtype]
-    model_config |= {'device': config.device, 'dtype': dtype}
+    model_config |= {'device': config.device, 'dtype': dtype, 'flash_attn': config.flash_attn}
     model = LTransformerLM(**model_config)
     
     # load model
