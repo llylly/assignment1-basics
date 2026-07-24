@@ -209,7 +209,8 @@ def run_compute_policy_gradient_loss(
                 Statistics from the underlying loss call, such as
                 clip-fraction components.
     """
-    raise NotImplementedError
+    from alignment.lrlvr_utils import compute_policy_gradient_loss
+    return compute_policy_gradient_loss(raw_rewards_or_advantages, policy_log_probs, importance_reweighting_method, old_log_probs, cliprange, response_mask)
 
 
 def run_aggregate_loss_across_microbatch(
@@ -241,7 +242,8 @@ def run_aggregate_loss_across_microbatch(
             A scalar containing the average loss. Make sure you can later call
             backward on this loss.
     """
-    raise NotImplementedError
+    from alignment.lrlvr_utils import aggregate_loss_across_microbatch_sequence
+    return aggregate_loss_across_microbatch_sequence(per_token_policy_gradient_loss, mask, loss_normalization, normalization_constant)
 
 
 def run_grpo_train_step(
@@ -986,7 +988,7 @@ def run_transformer_lm(
     from basics.lmodeling import LTransformerLM
     lm = LTransformerLM(d_model, num_heads, d_ff, context_length, vocab_size, num_layers, rope_theta)
     lm.load_state_dict(weights)
-    return lm(in_indices)
+    return lm(in_indices).logits
 
 
 def run_rmsnorm(

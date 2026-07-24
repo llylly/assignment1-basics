@@ -122,4 +122,38 @@ def compute_group_normalized_rewards(
     }
     return advantages, metadata
 
+def compute_policy_gradient_loss(
+        raw_rewards_or_advantages: torch.Tensor,
+        policy_log_probs: torch.Tensor,
+        importance_reweighting_method: Literal['none', 'noclip', 'grpo', 'gspo'] = 'none',
+        old_log_probs: torch.Tensor | None = None,
+        cliprange: float | None = None,
+        response_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+        This compute the per-token policy-gradient loss, i.e., excluding 1/(BG) and 1/len(y) coefficient in GRPO that will be introduced in later aggregation
+    """
+    if raw_rewards_or_advantages.ndim == 1:
+        raw_rewards_or_advantages = raw_rewards_or_advantages.view(-1, 1)
+    metadata = {}
+    if importance_reweighting_method == 'none':
+        loss = - raw_rewards_or_advantages * policy_log_probs
+    else:
+        raise NotImplementedError
+    if response_mask is not None:
+        loss = loss * response_mask
+    return loss, metadata
+
+def aggregate_loss_across_microbatch_sequence(
+        per_token_policy_gradient_loss: torch.Tensor,
+        mask: torch.Tensor,
+        loss_normalization: Literal["sequence", "constant"] = "sequence",
+        normalization_constant: int | None = None,
+    ) -> torch.Tensor:
+    if loss_normalization == 'sequence':
+        return ((mask * per_token_policy_gradient_loss).sum(dim=-1) / mask.sum(dim=-1)).mean()
+    else:
+        # "constant"
+        assert normalization_constant is not None
+        return (mask * per_token_policy_gradient_loss).sum() / normalization_constant
 
