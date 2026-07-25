@@ -1,10 +1,50 @@
 from typing import Callable, Literal
+from dataclasses import dataclass
 import torch
 import transformers
 from basics.ltokenizer import LTokenizer
 from basics.ltrain import LGradientClipping
 from basics.lmodeling import LTransformerLM
 from alignment.lrl_utils import *
+
+
+@dataclass
+class TrainerConfig:
+    batch_size: int
+    tot_steps: int
+    warmup_steps: int
+    cooldown_steps: int
+    learning_rate: float
+    cooldown_learning_rate: float
+    seqlen: int
+    beta1: float = 0.9
+    beta2: float = 0.99
+    weight_decay: float = 0.1
+    accum_steps: int = 1
+    gradient_clipping: float | None = 3.0
+    opt_type: Literal['adam', 'sgd'] = 'adam'
+
+@dataclass
+class RLConfig:
+    trainer: TrainerConfig
+    model_config: str
+    """yaml file of model configs"""
+    data: str
+    """tokenized one-dimensional numpy array data for training"""
+    save_path: str
+    """path to save model and opt, should be a folder"""
+    val_data: str | None = None
+    """tokenized one-dimensional numpy array data for validation"""
+    device: str = 'cuda'
+    dtype: Literal['bfloat16', 'float32'] = 'bfloat16'
+    resume_path: str | None = None
+    run_name: str | None = ''
+    """run_name is appended to both save_path and wandb"""
+    val_step: int = 1000
+    save_step: int = 1000
+    debug: bool = False 
+    """if debug, dump more statistics (act norm, grad norm per layer) on wandb"""
+
 
 def grpo_train_step(
         model: transformers.PreTrainedModel | LTransformerLM,

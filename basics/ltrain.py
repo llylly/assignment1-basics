@@ -213,7 +213,7 @@ if __name__ == '__main__':
                 x = torch.tensor(dataset[s_idx: s_idx + chunk_size], dtype=torch.long, device=config.device).view((config.trainer.batch_size, config.trainer.seqlen))
                 y = torch.tensor(dataset[s_idx+1: s_idx + chunk_size + 1], dtype=torch.long, device=config.device).view((config.trainer.batch_size, config.trainer.seqlen))
                 with torch.no_grad():
-                    y_pred = model(x)
+                    y_pred = model(x).logits
                     loss = LCrossEntropy(y_pred, y).item()
                 tot_val_loss = tot_val_loss * tot_val_batch / (tot_val_batch + 1) + loss / (tot_val_batch + 1)
                 tot_val_batch += 1
