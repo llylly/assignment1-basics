@@ -45,6 +45,7 @@ def get_response_log_probs(
     if not return_token_entropy:
         Z = logits.exp().sum(dim=-1).log()
         log_probs = logits.gather(dim=-1, index=labels.unsqueeze(dim=-1)).squeeze(dim=-1) - Z
+        # log_probs = - torch.nn.functional.cross_entropy(logits.permute(0, 2, 1), labels, reduction='none')
     else:
         Z1 = logits.exp()
         Z2 = Z1.sum(dim=-1)
@@ -52,10 +53,12 @@ def get_response_log_probs(
         Z = Z2.log()
         log_probs = logits.gather(dim=-1, index=labels.unsqueeze(dim=-1)).squeeze(dim=-1) - Z
         all_log_probs = logits - Z.unsqueeze(dim=-1)
+        # log_probs = - torch.nn.functional.cross_entropy(logits.permute(0, 2, 1), labels, reduction='none')
     if return_token_entropy:
         return {
             'log_probs': log_probs,
             'token_entropy': -(all_probs * all_log_probs).sum(dim=-1)
+            # 'token_entropy': - torch.nn.functional.cross_entropy(logits.permute(0, 2, 1), all_probs.permute(0, 2, 1), reduction='none') # .sum(dim=-1)
         }
     else:
         return {'log_probs': log_probs}
@@ -74,18 +77,18 @@ def compute_rollout_rewards(
     reward_fn_rets = list(map(reward_fn, rollout_responses, repeated_group_truths))
     raw_rewards = torch.tensor([item['reward'] for item in reward_fn_rets])
     metadata = {
-        'mean/reward': sum([item['reward'] for item in reward_fn_rets]) / len(rollout_responses),
-        'mean/format_reward':  sum([item['format_reward'] for item in reward_fn_rets]) / len(rollout_responses),
-        'mean/answer_reward':  sum([item['answer_reward'] for item in reward_fn_rets]) / len(rollout_responses),
-        'max/reward':  max([item['reward'] for item in reward_fn_rets]),
-        'max/format_reward':  max([item['format_reward'] for item in reward_fn_rets]),
-        'max/answer_reward':  max([item['answer_reward'] for item in reward_fn_rets]),
-        'min/reward':  min([item['reward'] for item in reward_fn_rets]),
-        'min/format_reward':  min([item['format_reward'] for item in reward_fn_rets]),
-        'min/answer_reward':  min([item['answer_reward'] for item in reward_fn_rets]),
-        'std/reward':  float(std([item['reward'] for item in reward_fn_rets], ddof=1)),
-        'std/format_reward':  float(std([item['format_reward'] for item in reward_fn_rets], ddof=1)),
-        'std/answer_reward':  float(std([item['answer_reward'] for item in reward_fn_rets], ddof=1)),
+        'reward/mean': sum([item['reward'] for item in reward_fn_rets]) / len(rollout_responses),
+        'format_reward/mean':  sum([item['format_reward'] for item in reward_fn_rets]) / len(rollout_responses),
+        'answer_reward/mean':  sum([item['answer_reward'] for item in reward_fn_rets]) / len(rollout_responses),
+        'reward/max':  max([item['reward'] for item in reward_fn_rets]),
+        'format_reward/max':  max([item['format_reward'] for item in reward_fn_rets]),
+        'answer_reward/max':  max([item['answer_reward'] for item in reward_fn_rets]),
+        'reward/min':  min([item['reward'] for item in reward_fn_rets]),
+        'format_reward/min':  min([item['format_reward'] for item in reward_fn_rets]),
+        'answer_reward/min':  min([item['answer_reward'] for item in reward_fn_rets]),
+        'reward/std':  float(std([item['reward'] for item in reward_fn_rets], ddof=1)),
+        'format_reward/std':  float(std([item['format_reward'] for item in reward_fn_rets], ddof=1)),
+        'answer_reward/std':  float(std([item['answer_reward'] for item in reward_fn_rets], ddof=1)),
     }
     return raw_rewards, metadata
 
@@ -96,11 +99,9 @@ def compute_group_normalized_rewards(
         advantage_eps: float = 1e-6,
         advantage_normalizer: Literal["std", "none", "mean"] = "std"
     ):
-    print(raw_rewards)
     group_viewed = raw_rewards.view(-1, group_size)
     group_mean = group_viewed.mean(dim=-1, keepdim=True)
     group_std = (group_viewed).std(dim=-1, unbiased=True, keepdim=True) # but the previous text said to use /n. Here to pass the unit test I use /(n-1).
-    print(group_size, group_viewed, group_mean, group_std)
     if baseline == 'mean':
         new_group_viewed = group_viewed - group_mean
     elif baseline == 'none':
@@ -113,13 +114,14 @@ def compute_group_normalized_rewards(
         denominator = group_mean + advantage_eps
     else:
         raise NotImplementedError
-    advantages = (new_group_viewed / denominator).view(-1)
+    advantages = new_group_viewed / denominator
     metadata = {
-        'mean/advantage': advantages.mean().item(),
-        'max/advantage':  advantages.max().item(),
-        'min/advantage':  advantages.min().item(),
-        'std/advantage':  advantages.std(unbiased=True).item(),
+        'advantage/mean': advantages.mean(dim=-1).tolist(),
+        'advantage/max':  advantages.amax(dim=-1).tolist(),
+        'advantage/min':  advantages.amin(dim=-1).tolist(),
+        'advantage/std':  advantages.std(dim=-1, unbiased=True).tolist(),
     }
+    advantages = advantages.view(-1)
     return advantages, metadata
 
 def compute_policy_gradient_loss(

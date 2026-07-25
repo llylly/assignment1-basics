@@ -51,7 +51,7 @@ def run_tokenize_prompt_and_output(
                 with labels, with value 1 where the corresponding label token
                 is part of the response and 0 otherwise.
     """
-    from alignment.lrlvr_utils import tokenize_prompt_and_output
+    from alignment.lrl_utils import tokenize_prompt_and_output
     return tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer)
 
 
@@ -88,7 +88,7 @@ def run_get_response_log_probs(
                 entropy for each position (present only if
                 return_token_entropy=True).
     """
-    from alignment.lrlvr_utils import get_response_log_probs
+    from alignment.lrl_utils import get_response_log_probs
     return get_response_log_probs(model, input_ids, labels, return_token_entropy)
 
 
@@ -121,7 +121,7 @@ def run_compute_rollout_rewards(
                 Reward statistics to log. At minimum, include the mean total
                 and format rewards over the rollout batch.
     """
-    from alignment.lrlvr_utils import compute_rollout_rewards
+    from alignment.lrl_utils import compute_rollout_rewards
     return compute_rollout_rewards(reward_fn, rollout_responses, repeated_ground_truths)
 
 
@@ -161,8 +161,15 @@ def run_compute_group_normalized_rewards(
                 your choice of other statistics to log (e.g. mean, std, max/min
                 of rewards).
     """
-    from alignment.lrlvr_utils import compute_group_normalized_rewards
-    return compute_group_normalized_rewards(raw_rewards, group_size, baseline, advantage_eps, advantage_normalizer)
+    from alignment.lrl_utils import compute_group_normalized_rewards
+    advantages, metadata = compute_group_normalized_rewards(raw_rewards, group_size, baseline, advantage_eps, advantage_normalizer)
+    new_metadata = {}
+    for k, v in metadata.items():
+        if isinstance(v, list):
+            new_metadata[k] = sum(v)
+        else:
+            new_metadata[k] = v
+    return advantages, new_metadata
 
 
 def run_compute_policy_gradient_loss(
@@ -209,7 +216,7 @@ def run_compute_policy_gradient_loss(
                 Statistics from the underlying loss call, such as
                 clip-fraction components.
     """
-    from alignment.lrlvr_utils import compute_policy_gradient_loss
+    from alignment.lrl_utils import compute_policy_gradient_loss
     return compute_policy_gradient_loss(raw_rewards_or_advantages, policy_log_probs, importance_reweighting_method, old_log_probs, cliprange, response_mask)
 
 
@@ -242,7 +249,7 @@ def run_aggregate_loss_across_microbatch(
             A scalar containing the average loss. Make sure you can later call
             backward on this loss.
     """
-    from alignment.lrlvr_utils import aggregate_loss_across_microbatch_sequence
+    from alignment.lrl_utils import aggregate_loss_across_microbatch_sequence
     return aggregate_loss_across_microbatch_sequence(per_token_policy_gradient_loss, mask, loss_normalization, normalization_constant)
 
 
@@ -332,7 +339,8 @@ def run_grpo_train_step(
                 Dict with metadata from the underlying loss call, gradient norm
                 before clipping, and any other statistics you might want to log.
     """
-    raise NotImplementedError
+    from alignment.lrl import grpo_train_step
+    return grpo_train_step(model, tokenizer, optimizer, gradient_accumulation_steps, max_grad_norm, reward_fn, repeated_prompts, rollout_responses, repeated_ground_truths, group_size, baseline, advantage_eps, advantage_normalizer, importance_reweighting_method, old_log_probs, cliprange, loss_normalization, normalization_constant)
 
 
 """

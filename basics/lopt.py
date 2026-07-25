@@ -94,15 +94,16 @@ def LCosineLR(it: int,
     else:
         return min_learning_rate
 
-def LGradientClipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> int:
+def LGradientClipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float | None) -> int:
     norm = None
+    parameters = list(parameters)
     for param in parameters:
         if param.grad is not None:
             if norm is None: 
                 norm = torch.sum(param.grad * param.grad) 
             else: norm += torch.sum(param.grad * param.grad)
     norm = norm.sqrt()
-    if norm >= max_l2_norm:
+    if max_l2_norm is not None and norm >= max_l2_norm:
         for param in parameters:
             if param.grad is not None:
                 param.grad *= max_l2_norm / (norm + 1e-6)
