@@ -24,6 +24,7 @@ from basics.ltrain import LGradientClipping
 from basics.lopt import LSGD, LAdamW
 from basics.ltrain_utils import dict_to_dataclass, load_checkpoint
 from basics.lmodeling import LTransformerLM
+from alignment import vllm_utils
 from alignment.lrl_utils import *
 
 
@@ -226,3 +227,13 @@ if __name__ == '__main__':
     config.trainer.max_seqlen_clipping = model.max_seq_len
 
     # launch vllm server, then replace dummy parameter with the real one
+    print('Setting up vllm server...')
+    if config.inference_backend == 'vllm':
+        inference_serv_proc = vllm_utils.start_server(eval_config.model_dir, eval_config.vllm_ip, eval_config.vllm_port, eval_config.dtype, 0, 42, "auto", 'INFO')
+        vllm_utils.wait_for_server(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', serv_proc, 300)
+        inference_server = 
+    else:
+        raise NotImplementedError
+
+    # main loop
+    # TODO

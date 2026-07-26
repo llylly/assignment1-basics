@@ -1,8 +1,8 @@
 from alignment import vllm_utils
 
-# MODEL_DIR = 'models/OLMo-2-0425-1B'
+MODEL_DIR = 'models/OLMo-2-0425-1B'
 # MODEL_DIR = 'models/SmolLM-1.7B'
-MODEL_DIR = 'models/Qwen3.5-0.8B-Base'
+# MODEL_DIR = 'models/Qwen3.5-0.8B-Base'
 
 if __name__ == '__main__':
     serv_proc = vllm_utils.start_server(MODEL_DIR, '127.0.0.1', 8080, 'bfloat16', 0, 42, "auto", 'INFO')

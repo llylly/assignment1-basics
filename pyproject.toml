@@ -30,7 +30,7 @@ dependencies = [
     "modal>=1.1.0",
     "pylatexenc>=2.10",
     "transformers>=4.50.0",
-    "typer>=0.15.4",
+    "typer==0.25.1",
     "xopen>=2.0.2",
 ]
 
@@ -61,7 +61,6 @@ module-root = ""
 package = true
 python-preference = "managed"
 environments = [
-    "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
