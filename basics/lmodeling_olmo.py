@@ -53,7 +53,7 @@ def from_pretrained(model_dir: str, dtype=None, device='cuda', flash_attn=False)
     ]
 
     # load tokenizer
-    tokenizer = LTokenizer.from_hf_tokenziers(model_dir)
+    tokenizer = LTokenizer.from_hf_tokenizers(model_dir)
 
     # construct model
     config_path = os.path.join(model_dir, 'config.json')

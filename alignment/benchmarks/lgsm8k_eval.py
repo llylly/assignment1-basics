@@ -17,7 +17,7 @@ from basics.linference import generate
 from alignment import drgrpo_grader
 
 @dataclass
-class EvalConfig:
+class GSM8KEvalConfig:
     backend: Literal['native', 'vllm'] = 'native' # 'vllm' / 'native'
     dtype: Literal['bfloat16', 'float32'] = 'bfloat16' # or 'float32'
     prompt_type: Literal['r1_zero', 'question_only', 'r1_zero_three_shot_gsm8k'] = 'r1_zero' # or 'question_only'
@@ -27,14 +27,28 @@ class EvalConfig:
     batch_size: int = 5
     first_n_samp: int | None = None
     model_dir: str = 'models/OLMo-2-0425-1B'
-    data_dir: str = 'data/gsm8k'
+    data_file: str = 'data/gsm8k/test.jsonl'
     run_suffix: str = 'baseeval'
     save_dir: str = 'eval'
     vllm_server_no_host: bool = False # in this case, assume the host is already there
     vllm_ip: str = '127.0.0.1'
     vllm_port: int = 8080
 
-def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbose=True):
+def gsm8k_question_grader(sample: dict, response: str, prompt_type: Literal['r1_zero', 'question_only', 'r1_zero_three_shot_gsm8k']) -> tuple[dict, dict]:
+    # potentially modified queston_sample, along with grade result which is a dict containing at least 'reward': float
+
+    if prompt_type == 'r1_zero' or prompt_type == 'r1_zero_three_shot_gsm8k':
+        grade_fn = drgrpo_grader.r1_zero_reward_fn
+    elif prompt_type == 'question_only':
+        grade_fn = drgrpo_grader.question_only_reward_fn
+
+    final_answer = sample['answer'][sample['answer'].find('####') + 4:].strip()
+    rewards = grade_fn(response, final_answer, False)
+
+    sample['final_answer'] = final_answer
+    return rewards, sample
+
+def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=True, verbose=True):
 
     nowtime = datetime.now().strftime('_%Y%m%d_%H%M%S')
     run_name = f'gsm8k_test_{eval_config.run_suffix}_{eval_config.backend}_prompt_{eval_config.prompt_type}_temp_{eval_config.temperature}_n_{eval_config.n}_max_new_tokens_{eval_config.max_new_tokens}_{eval_config.model_dir.replace("/", "-")}_{eval_config.dtype}_bs_{eval_config.batch_size}_{nowtime}'
@@ -49,7 +63,7 @@ def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbo
     stime = time.time()
 
     # load data
-    with open(os.path.join(eval_config.data_dir, 'test.jsonl'), 'r') as f:
+    with open(eval_config.data_file, 'r') as f:
         test_data = [json.loads(item) for item in f.readlines()]
     
     if verbose: print('Loading prompt...')
@@ -74,7 +88,6 @@ def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbo
     try:
         for item in tqdm.tqdm(test_data if eval_config.first_n_samp is None else test_data[:eval_config.first_n_samp]):
             raw_question = item['question']
-            final_answer = item['answer'][item['answer'].find('####') + 4:].strip()
             templated_question = prompt_template.format(question=raw_question)
             continuations = []
             while len(continuations) < eval_config.n:
@@ -98,14 +111,9 @@ def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbo
                 'question': item['question'],
                 'prompt': templated_question,
                 'answer': item['answer'],
-                'final_answer': final_answer,
                 'continuations': continuations
             }
             grades = []
-            if eval_config.prompt_type == 'r1_zero' or eval_config.prompt_type == 'r1_zero_three_shot_gsm8k':
-                grade_fn = drgrpo_grader.r1_zero_reward_fn
-            elif eval_config.prompt_type == 'question_only':
-                grade_fn = drgrpo_grader.question_only_reward_fn
 
             for i in range(eval_config.n):
                 # too slow
@@ -118,14 +126,16 @@ def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbo
                 # except Exception:
                 #     rewards = grade_fn(finished['continuations'][i].text, final_answer, True)
                 # p.close()
-                rewards = grade_fn(finished['continuations'][i].text, final_answer, False)
+                
+                rewards, _ = gsm8k_question_grader(item, finished['continuations'][i].text, eval_config.prompt_type)
 
                 # contains format_reward, answer_reward, reward
                 rewards['stopped'] = float(int(finished['continuations'][i].finish_reason == 'stop'))
                 rewards['ans_len'] = len(finished['continuations'][i].token_ids)
                 rewards['raw_text'] = finished['continuations'][i].text
-                rewards['gt_ans'] = final_answer
+                rewards['gt_ans'] = item['final_answer']
                 grades.append(rewards)
+            
             finished['grades'] = grades
             del finished['continuations']
             
@@ -177,15 +187,15 @@ def gsm8k_eval(eval_config: EvalConfig, dump_file=True, launch_wandb=True, verbo
 
 """
 Example commands:
-uv run alignment/gsm8k_eval.py --backend vllm --prompt_type r1_zero
-uv run alignment/gsm8k_eval.py --backend vllm --prompt_type r1_zero_three_shot_gsm8k
-uv run alignment/gsm8k_eval.py --backend vllm --prompt_type question_only
-uv run alignment/gsm8k_eval.py --backend native --prompt_type r1_zero
-uv run alignment/gsm8k_eval.py --backend native --prompt_type r1_zero_three_shot_gsm8k
-uv run alignment/gsm8k_eval.py --backend native --prompt_type question_only
+uv run alignment/lgsm8k_eval.py --backend vllm --prompt_type r1_zero
+uv run alignment/lgsm8k_eval.py --backend vllm --prompt_type r1_zero_three_shot_gsm8k
+uv run alignment/lgsm8k_eval.py --backend vllm --prompt_type question_only
+uv run alignment/lgsm8k_eval.py --backend native --prompt_type r1_zero
+uv run alignment/lgsm8k_eval.py --backend native --prompt_type r1_zero_three_shot_gsm8k
+uv run alignment/lgsm8k_eval.py --backend native --prompt_type question_only
 """
 if __name__ == '__main__':
-    config = tyro.cli(EvalConfig)
-    gsm8k_eval(config, dump_file=True, launch_wandb=True, verbose=True)
+    config = tyro.cli(GSM8KEvalConfig)
+    gsm8k_seteval(config, dump_file=True, launch_wandb=True, verbose=True)
 
     

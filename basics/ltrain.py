@@ -1,3 +1,7 @@
+"""
+    Entry script for pretrain
+"""
+
 from dataclasses import dataclass, field, asdict
 from typing import Literal
 import tyro

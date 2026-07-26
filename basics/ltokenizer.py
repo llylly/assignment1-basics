@@ -330,7 +330,7 @@ class LTokenizer:
         return LTokenizer(vocab, merges, special_tokens)
     
     @classmethod
-    def from_hf_tokenziers(cls, model_dir: str):
+    def from_hf_tokenizers(cls, model_dir: str):
         # Restore from vocab.json and merges.txt
         gpt2_byte_decoder = {v: k for k, v in gpt2_bytes_to_unicode().items()}
         vocab_path = os.path.join(model_dir, 'vocab.json')
@@ -362,6 +362,49 @@ class LTokenizer:
         cons_tokenizer = LTokenizer(vocab, merges, special_tokens)
         cons_tokenizer.eos_token = eos_token
         return cons_tokenizer
+
+    def save_hf_pretrained(self, model_dir: str):
+        """
+            Save to HF compatible pretrained tokenizers
+        """
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+        gpt2_byte_encoder = gpt2_bytes_to_unicode()
+        vocab_encoding: dict[bytes, str] = {
+            v: ''.join([gpt2_byte_encoder[c] for c in v]) for v in self.vocab.values()
+        }
+        vocab_path = os.path.join(model_dir, 'vocab.json')
+        merges_path = os.path.join(model_dir, 'merges.txt')
+        tokenizer_cfg_path = os.path.join(model_dir, 'tokenizer_config.json')
+        vocabs = {vocab_encoding[v]: k for k, v in self.vocab.items()}
+        with open(vocab_path, 'w') as f:
+            json.dump(vocabs, f, ensure_ascii=False)
+        with open(merges_path, 'w') as f:
+            for a, b in self.merges:
+                print(vocab_encoding[a], vocab_encoding[b], end='\n', file=f)
+        with open(tokenizer_cfg_path, 'w') as f:
+            configs = {
+                "add_prefix_space": False,
+                "added_tokens_decoder": {
+                    vocabs[special_token]: {
+                        "content": special_token,
+                        "lstrip": False,
+                        "normalized": False,
+                        "rstrip": False,
+                        "single_word": False,
+                        "special": True
+                    } for special_token in (self.special_tokens or [])
+                },
+                "bos_token": self.eos_token if self.eos_token else self.special_tokens[0] if self.special_tokens else '',
+                "clean_up_tokenization_spaces": False,
+                "eos_token": self.eos_token if self.eos_token else self.special_tokens[0] if self.special_tokens else '',
+                "extra_special_tokens": {},
+                "model_max_length": 1000000000000000019884624838656,
+                "pad_token": self.eos_token if self.eos_token else self.special_tokens[0] if self.special_tokens else '',
+                "tokenizer_class": "GPT2Tokenizer",
+                "unk_token": self.eos_token if self.eos_token else self.special_tokens[0] if self.special_tokens else '',
+            }
+            print(json.dumps(configs, indent=2), file=f)
 
     def encode(self, text: str) -> list[int]:
         chunks = []

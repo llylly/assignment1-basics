@@ -1,0 +1,17 @@
+{
+  "base_model_ckpt": "models/OLMo-2-0425-1B",
+  "base_model_format": "olmo_hf",
+  "task_name": "gsm8k",
+  "save_path": "models/olmo2_1B_base_rl_gsm8k",
+  "train_data": "data/gsm8k/train.jsonl",
+  "val_data": "data/gsm8k/test.jsonl",
+  "trainer": {
+    "batch_size": 256,
+    "tot_steps": 200,
+    "learning_rate": 0.00001,
+    "group_size": 8,
+    "gradient_accumulation_steps": 32,
+    "rollout_temperature": 1.0,
+    "rollout_max_new_tokens": 512
+  }
+}
