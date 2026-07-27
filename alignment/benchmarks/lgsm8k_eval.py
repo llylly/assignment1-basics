@@ -138,7 +138,7 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
                     passn[k] = max([item[k] for item in grades])
                     avg_pass1[k] = (avg_pass1.get(k, 0.0) * q_idx + pass1[k]) / (q_idx + 1)
                     avg_passn[k] = (avg_passn.get(k, 0.0) * q_idx + passn[k]) / (q_idx + 1)
-                    print(f'{k:20}: now pass1 = {pass1[k]:5.3f} tot pass1 = {avg_pass1[k]:5.3f} now passn = {passn[k]:5.3f} tot passn = {avg_passn[k]:5.3f}')
+                    if verbose: print(f'{k:20}: now pass1 = {pass1[k]:5.3f} tot pass1 = {avg_pass1[k]:5.3f} now passn = {passn[k]:5.3f} tot passn = {avg_passn[k]:5.3f}')
                 finished['pass1'] = pass1
                 finished['passn'] = passn
 
@@ -146,78 +146,6 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
                 if launch_wandb:
                     wandb.log({'pass1': pass1, 'passn': passn, 'avg_pass1': avg_pass1, 'avg_passn': avg_passn, 'time_spent': time.time() - stime}, step=q_idx)
 
-        # =========== OLD VERSION ===========
-        # now_cnt = 0
-        # for item in tqdm.tqdm(test_data if eval_config.first_n_samp is None else test_data[:eval_config.first_n_samp]):
-        #     templated_question = gsm8k_question_formulator(item, prompt_template)
-        #     continuations = []
-        #     while len(continuations) < eval_config.n:
-        #         amounts_to_gen = min(eval_config.n - len(continuations), eval_config.batch_size)
-        #         if eval_config.backend == 'vllm':
-        #             ret = vllm_utils.generate_completions(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', eval_config.model_dir, [templated_question], {
-        #                 'temperature': eval_config.temperature,
-        #                 'max_tokens': eval_config.max_new_tokens,
-        #                 'n': amounts_to_gen,
-        #                 'seed': 42,
-        #                 'stop': ['</answer>'],
-        #                 'include_stop_str_in_output': True,
-        #             }, None)
-        #         elif eval_config.backend == 'native':
-        #             ret = generate(model, [templated_question for _ in range(amounts_to_gen)], tokenizer, eval_config.max_new_tokens, eval_config.temperature, extra_stop_tokens=['</answer>'], include_stop_str_in_output=True, verbose=False)
-        #         else:
-        #             raise NotImplementedError
-        #         continuations.extend(ret)
-            
-        #     finished = {
-        #         'question': item['question'],
-        #         'prompt': templated_question,
-        #         'answer': item['answer'],
-        #         'continuations': continuations
-        #     }
-        #     grades = []
-
-        #     for i in range(eval_config.n):
-        #         # too slow
-        #         # p = multiprocessing.get_context('spawn').Process(target=grade_fn, args=(finished['continuations'][i].text, final_answer, False))
-        #         # p.start()
-        #         # try:
-        #         #     p.join(timeout=3)
-        #         #     assert (p.exitcode is not None) and p.exitcode == 0 # first check whether it can safely exit
-        #         #     rewards = grade_fn(finished['continuations'][i].text, final_answer, False)
-        #         # except Exception:
-        #         #     rewards = grade_fn(finished['continuations'][i].text, final_answer, True)
-        #         # p.close()
-
-        #         final_answer = item['answer'][item['answer'].find('####') + 4:].strip()
-        #         item['final_answer'] = final_answer
-        #         rewards = gsm8k_question_grader(finished['continuations'][i].text, final_answer, eval_config.prompt_type)
-
-        #         # contains format_reward, answer_reward, reward
-        #         rewards['stopped'] = float(int(finished['continuations'][i].finish_reason == 'stop'))
-        #         rewards['ans_len'] = len(finished['continuations'][i].token_ids)
-        #         rewards['raw_text'] = finished['continuations'][i].text
-        #         rewards['gt_ans'] = item['final_answer']
-        #         grades.append(rewards)
-            
-        #     finished['grades'] = grades
-        #     del finished['continuations']
-            
-        #     pass1 = {}
-        #     passn = {}
-        #     for k in ['reward', 'answer_reward', 'format_reward', 'stopped', 'ans_len']:
-        #         pass1[k] = sum([item[k] for item in grades]) / len(grades)
-        #         passn[k] = max([item[k] for item in grades])
-        #         avg_pass1[k] = (avg_pass1.get(k, 0.0) * now_cnt + pass1[k]) / (now_cnt + 1)
-        #         avg_passn[k] = (avg_passn.get(k, 0.0) * now_cnt + passn[k]) / (now_cnt + 1)
-        #         print(f'{k:20}: now pass1 = {pass1[k]:5.3f} tot pass1 = {avg_pass1[k]:5.3f} now passn = {passn[k]:5.3f} tot passn = {avg_passn[k]:5.3f}')
-        #     finished['pass1'] = pass1
-        #     finished['passn'] = passn
-
-        #     now_cnt += 1
-        #     all_finished.append(finished)
-        #     if launch_wandb:
-        #         wandb.log({'pass1': pass1, 'passn': passn, 'avg_pass1': avg_pass1, 'avg_passn': avg_passn, 'time_spent': time.time() - stime}, step=now_cnt)
-    
     finally:
         if eval_config.backend == 'vllm' and not eval_config.vllm_server_no_host:
             vllm_utils.stop_server(serv_proc)

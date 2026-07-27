@@ -11,7 +11,8 @@
     "tot_steps": 200,
     "learning_rate": 0.00001,
     "group_size": 8,
-    "gradient_accumulation_steps": 32,
+    "gradient_accumulation_steps": 64,
+    "rollout_batch_size": 256,
     "rollout_temperature": 1.0,
     "rollout_max_new_tokens": 512
   }

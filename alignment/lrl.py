@@ -22,7 +22,7 @@ import torch
 import transformers
 
 from basics.ltokenizer import LTokenizer
-from basics.ltrain import LGradientClipping
+from basics.ltrain import LGradientClipping, save_checkpoint
 from basics.lopt import LSGD, LAdamW
 from basics.ltrain_utils import dict_to_dataclass, load_checkpoint
 from basics.lmodeling import LTransformerLM
@@ -49,7 +49,7 @@ class RLTrainerConfig:
     rollout_temperature: float = 1.0
     """Use rollout batch size = train batch size"""
     rollout_max_new_tokens: int = 512
-    rollout_stop_words: list[str] = ['</answer>']
+    rollout_stop_words: list[str] = field(default_factory=lambda: ['</answer>'])
 
     rollout_batch_size: int | None = None
     """If none, equal to batch_size, otherwise whould be a divisor of batch_size"""
@@ -186,10 +186,16 @@ def grpo_train_step(
         'micro_batch_size': micro_batch_size,
         'macro_batch_size': macro_batch_size,
         'token_entropy': mean_token_entropy,
-        'grad_norm': grad_norm
+        'grad_norm': grad_norm,
+        'ctx_len': input_ids.shape[-1]
     } | raw_rewards_metadata_agg | advantage_metadata_agg
 
     return batch_loss, metadata
+
+"""
+Usage:
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3
+"""
 
 if __name__ == '__main__':
     if '--config_path' in sys.argv:
@@ -279,7 +285,7 @@ if __name__ == '__main__':
         else:
             init_vllm_model_path = config.base_model_ckpt
         inference_device_no = int(config.inference_device[5:])
-        rank_offset = inference_device_no - int(config.device[5:])
+        rank_offset = 1
         vllm_base_url = f'http://{config.inference_vllm_ip}:{config.inference_vllm_port}'
         weight_format_converter = None
         if config.base_model_format in ['olmo_lllm', 'olmo_hf']:
@@ -323,7 +329,7 @@ if __name__ == '__main__':
             model_dir=init_vllm_model_path,
             data_file=config.val_data,
             run_suffix='rl_eval_stepX',
-            save_dir='', # no save so doesn't matter
+            save_dir='', # will be overwritten
             vllm_server_no_host=True,
             vllm_ip=config.inference_vllm_ip,
             vllm_port=config.inference_vllm_port
@@ -354,7 +360,7 @@ if __name__ == '__main__':
 
     # main loop
     try:
-        for now_step in tqdm(range(start_step, config.trainer.tot_steps), dec='training'):
+        for now_step in tqdm(range(start_step, config.trainer.tot_steps), desc='training'):
             # TODO: support other LR
             now_lr = config.trainer.learning_rate
 
@@ -364,9 +370,12 @@ if __name__ == '__main__':
             train_data_repeated = [x for y in [[item] * config.trainer.group_size for item in train_data_batch] for x in y] # [q1, q1, q1, q2, q2, q2, ...]
             prompts = [question_formulator(item, chat_template) for item in train_data_repeated]
             ground_truths = []
-            for item in train_data_repeated:
-                final_answer = item['answer'][item['answer'].find('####') + 4:].strip()
-                ground_truths.append(final_answer)
+            if config.task_name == 'gsm8k':
+                for item in train_data_repeated:
+                    final_answer = item['answer'][item['answer'].find('####') + 4:].strip()
+                    ground_truths.append(final_answer)
+            else:
+                raise NotImplementedError
 
             print('Inferencing...')
             if config.inference_backend == 'vllm':
@@ -382,12 +391,12 @@ if __name__ == '__main__':
 
             print('Training...')
             # fully online RL
-            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.loss_normalization, config.trainer.normalization_constant)
+            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.loss_normalization, config.trainer.normalization_constant)
 
             print('Logging...')
-            train_metadata = metadata | rollout_metadata | {'loss': loss.item}
-            train_metadata = {'train/' + k: v for k, v in train_metadata.items()}
-            print(' '.join([k + '=' + (f'{train_metadata[k].item()}' if isinstance(train_metadata[k], torch.Tensor) else f'{train_metadata[k]}') for k in ['train/loss', 'train/grad_norm', 'train/token_entropy', 'train/length/mean']]))
+            train_metadata = metadata | rollout_metadata | {'loss': loss.item(), 'time': time.time() - stime}
+            train_metadata = {('train/' + k): v for k, v in train_metadata.items()}
+            print('\n'.join([k + '=' + (f'{train_metadata[k].item()}' if isinstance(train_metadata[k], torch.Tensor) else f'{train_metadata[k]}') for k in ['train/loss', 'train/grad_norm', 'train/token_entropy', 'train/length/mean', 'train/reward/mean']]))
             wandb.log(train_metadata, step=now_step)
 
             print('Weight sync...')
@@ -400,18 +409,49 @@ if __name__ == '__main__':
             if now_step % config.val_step == 0 or now_step == config.trainer.tot_steps - 1:
                 print('Validation...')
                 eval_config.run_suffix = f'rl_eval_step{now_step}'
-                overall_stats, val_details = task_set_grader(eval_config, False, False, True)
-                pass
+                eval_config.save_dir = str(save_path / 'val' / f'step_{now_step:07}')
+                overall_stats, val_details = task_set_grader(eval_config, True, False, False)
+                print(overall_stats)
+                val_metadata = {}
+                if config.task_name == 'gsm8k':
+                    for kk in ['pass1', 'passn']:
+                        for kkk in ['reward', 'answer_reward', 'format_reward', 'stopped', 'ans_len']:
+                            aggregated_num = sum([item[kk][kkk] for item in val_details]) / len(val_details)
+                            val_metadata[f'val/{kk}/{kkk}'] = aggregated_num
+                else:
+                    raise NotImplementedError
+                wandb.log(val_metadata, step=now_step)
 
             if now_step % config.rollout_save_step == 0 or now_step == config.trainer.tot_steps - 1:
                 print('Saving current rollout...')
-                # TODO
-                pass
+                rollouts = []
+                for prompt, ground_truth, completion in zip(prompts, ground_truths, rollout_completions):
+                    rollouts.append({
+                        'prompt': prompt,
+                        'ground_truth': ground_truth,
+                        'completion': completion.text,
+                        'completion_reason': completion.finish_reason,
+                        'completion_len': len(completion.token_ids)
+                    })
+                trace_save_path = save_path / 'train' / f'step_{now_step:07}'
+                if not os.path.exists(trace_save_path):
+                    os.makedirs(trace_save_path)
+                with open(trace_save_path / 'traces.jsonl', 'w') as f:
+                    for rollout in rollouts:
+                        json.dump(rollout, f)
+                        print('', file=f) # add \n
+                with open(trace_save_path / 'metrics.json', 'w') as f:
+                    json.dump({k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in train_metadata.items()}, f, indent=2)
 
             if now_step % config.ckpt_save_step == 0 or now_step == config.trainer.tot_steps - 1:
                 print('Saving model checkpoints...')
-                # TODO
-                pass
+                ckpt_save_path = save_path / 'ckpts' / f'step_{now_step:07}.pth'
+                if not os.path.exists(save_path / 'ckpts'):
+                    os.makedirs(save_path / 'ckpts')
+                save_checkpoint(model, optimizer, now_step, ckpt_save_path)
+
+            if now_step == config.trainer.tot_steps - 1:
+                print(json.dumps({k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in train_metadata.items()}, indent=2))
 
     finally:
         # sanitize

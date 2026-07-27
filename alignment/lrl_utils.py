@@ -14,12 +14,10 @@ def tokenize_prompt_and_output(
     tokenized_outputs = []
     max_len = 0
     for prompt, output in zip(prompt_strs, output_strs):
-        print(prompt, output)
         tok_prompt = tokenizer.encode(prompt)
         tok_output = tokenizer.encode(output)
         tokenized_prompts.append(tok_prompt)
         tokenized_outputs.append(tok_output)
-        print(tok_prompt + tok_output)
         max_len = max(len(tok_prompt) + len(tok_output) - 1, max_len)
     input_ids = torch.zeros((len(prompt_strs), max_len), dtype=torch.long)
     labels = torch.zeros((len(prompt_strs), max_len), dtype=torch.long)
@@ -139,7 +137,7 @@ def compute_policy_gradient_loss(
         raw_rewards_or_advantages = raw_rewards_or_advantages.view(-1, 1)
     metadata = {}
     if importance_reweighting_method == 'none':
-        loss = - raw_rewards_or_advantages * policy_log_probs
+        loss = - raw_rewards_or_advantages.to(policy_log_probs.device) * policy_log_probs
     else:
         raise NotImplementedError
     if response_mask is not None:

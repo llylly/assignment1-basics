@@ -234,7 +234,7 @@ def init_weight_sync(vllm_base_url: str, policy_device: str, rank_offset: int):
     init_info = {
         "master_address": master_address,
         "master_port": master_port,
-        "rank_offset": rank_offset, # difference between visible devices for vllm and trainer engine, 1 if cuda:0 for trainer and cuda:1 for inference; 2 if cuda:0 for trainer and cuda:2 for inference
+        "rank_offset": rank_offset, # because trainer_init has the convention to be 0, the offset is normally 1
         "world_size": world_size,
     }
 
@@ -276,8 +276,6 @@ def sync_policy_weights(policy: torch.nn.Module, vllm_base_url: str, weight_sync
         "packed": True,
     }
 
-    print(update_info)
-
     torch.cuda.set_device(next(policy.parameters()).device)
     _http_json("POST", f"{vllm_base_url}/pause", timeout=60)
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -298,3 +296,4 @@ def sync_policy_weights(policy: torch.nn.Module, vllm_base_url: str, weight_sync
         update_future.result()
     _http_json("POST", f"{vllm_base_url}/reset_prefix_cache", timeout=60)
     _http_json("POST", f"{vllm_base_url}/resume", timeout=60)
+    del weights
