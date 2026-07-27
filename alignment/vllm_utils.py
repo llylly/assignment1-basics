@@ -296,4 +296,3 @@ def sync_policy_weights(policy: torch.nn.Module, vllm_base_url: str, weight_sync
         update_future.result()
     _http_json("POST", f"{vllm_base_url}/reset_prefix_cache", timeout=60)
     _http_json("POST", f"{vllm_base_url}/resume", timeout=60)
-    del weights

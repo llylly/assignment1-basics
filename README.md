@@ -9,6 +9,7 @@ TODO:
 [ ] Support Muon optimizer 
 [ ] Implement Triton kernel for attention
 [ ] Distributed training
+[ ] Mechanistic interpretability - start from attention visualization figure for example
 
 Setup guide:
 - upload data/

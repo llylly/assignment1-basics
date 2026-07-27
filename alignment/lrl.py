@@ -99,10 +99,11 @@ class RLConfig:
     inference_vllm_port: int = 8080
     inference_vllm_seed: int | None = None #42
     inference_vllm_dummy_model_path: str | None = None
+    inference_vllm_gpu_memory_utilization: float = 0.8
     # if base_model_format == 'olmo_lllm', we need a dummy hf model path to launch vllm inference engine
     run_name: str | None = ''
     """run_name is appended to both save_path and wandb"""
-    val_step: int = 10
+    val_step: int = 20
     rollout_save_step: int = 10
     ckpt_save_step: int = 50
     debug: bool = False 
@@ -300,9 +301,9 @@ if __name__ == '__main__':
             'include_stop_str_in_output': True,
         }
 
-        inference_serv_proc = vllm_utils.start_server(init_vllm_model_path, config.inference_vllm_ip, config.inference_vllm_port, config.dtype, inference_device_no, config.inference_vllm_seed, "auto", 'INFO')
+        inference_serv_proc = vllm_utils.start_server(init_vllm_model_path, config.inference_vllm_ip, config.inference_vllm_port, config.dtype, inference_device_no, config.inference_vllm_seed, "auto", 'INFO', config.inference_vllm_gpu_memory_utilization)
         vllm_utils.wait_for_server(vllm_base_url, inference_serv_proc, 300) # wait for 300s
-        print('Inference server launched...\nNow attempt to sync up weights')
+        print('Inference server launched...\nNow sync up initial weights')
 
         weight_sync_group = vllm_utils.init_weight_sync(vllm_base_url, config.device, rank_offset)
         vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)
@@ -401,7 +402,8 @@ if __name__ == '__main__':
 
             print('Weight sync...')
             if config.inference_backend == 'vllm':
-                weight_sync_group = vllm_utils.init_weight_sync(vllm_base_url, config.device, rank_offset)
+                # no need to re-init
+                # weight_sync_group = vllm_utils.init_weight_sync(vllm_base_url, config.device, rank_offset)
                 vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)
             else:
                 raise NotImplementedError
