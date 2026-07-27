@@ -194,7 +194,8 @@ def grpo_train_step(
 
 """
 Usage:
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 (on RTX 6000 Ada)
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --trainer.gradient_accumulation_steps 32 (on H100)
 """
 
 if __name__ == '__main__':
