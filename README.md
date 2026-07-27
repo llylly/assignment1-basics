@@ -10,6 +10,12 @@ TODO:
 [ ] Implement Triton kernel for attention
 [ ] Distributed training
 
+Setup guide:
+- upload data/
+- uv sync --extra gpu
+- set -e LD_LIBRARY_PATH or unset LD_LIBRARY_PATH
+- uv run hf download allenai/OLMo-2-0425-1B --local-dir models/OLMo-2-0425-1B
+
 # CS336 Spring 2025 Assignment 1: Basics
 
 For a full description of the assignment, see the assignment handout at

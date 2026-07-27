@@ -78,6 +78,7 @@ class RLConfig:
     inference_vllm_server_no_host: bool = False # in this case, assume the host is already there
     inference_vllm_ip: str = '127.0.0.1'
     inference_vllm_port: int = 8080
+    inference_vllm_seed: int = 42
     inference_vllm_dummy_model_path: str | None = None
     # if base_model_format == 'olmo_lllm', we need a dummy hf model path to launch vllm inference engine
     run_name: str | None = ''
@@ -188,6 +189,7 @@ if __name__ == '__main__':
         assert config.tokenizer_path is not None, "if base_model_format == 'olmo_lllm', need to specify tokenizer_path"
         assert config.model_config is not None, "if base_model_format == 'olmo_lllm', need to specify model_config"
     assert config.inference_backend == 'vllm', 'backend engine from our own lllm is not supported yet until I know how to dynamically update engine weights'
+    assert config.inference_device.startswith('cuda:'), 'VLLM inference device should be of the format cuda:X'
 
     nowtime = datetime.now().strftime('_%Y%m%d_%H%M%S')
     original_save_path = config.save_path
@@ -214,7 +216,7 @@ if __name__ == '__main__':
         load_checkpoint(config.base_model_ckpt, model, None, no_optimizer_load=True)
     elif config.base_model_format == 'olmo_hf':
         from basics.lmodeling_olmo import from_pretrained
-        model, tokenizer = from_pretrained(config.base_model_ckpt, config.dtype, flash_attn=True)
+        model, tokenizer = from_pretrained(config.base_model_ckpt, config.dtype, config.device, flash_attn=True)
 
     if config.trainer.opt_type == 'adam':
         optimizer = LAdamW(model.parameters(), config.trainer.learning_rate, (config.trainer.beta1, config.trainer.beta2), config.trainer.weight_decay)
@@ -229,9 +231,23 @@ if __name__ == '__main__':
     # launch vllm server, then replace dummy parameter with the real one
     print('Setting up vllm server...')
     if config.inference_backend == 'vllm':
-        inference_serv_proc = vllm_utils.start_server(eval_config.model_dir, eval_config.vllm_ip, eval_config.vllm_port, eval_config.dtype, 0, 42, "auto", 'INFO')
-        vllm_utils.wait_for_server(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', serv_proc, 300)
-        inference_server = 
+        if config.base_model_format == 'olmo_lllm':
+            init_vllm_model_path = config.inference_vllm_dummy_model_path
+        else:
+            init_vllm_model_path = config.base_model_ckpt
+        inference_device_no = int(config.inference_device[5:])
+        rank_offset = inference_device_no - int(config.device[5:])
+        vllm_base_url = f'http://{config.inference_vllm_ip}:{config.inference_vllm_port}'
+        weight_format_converter = None
+        if config.base_model_format in ['olmo_lllm', 'olmo_hf']:
+            weight_format_converter = lrl_utils.lolmo2_to_vllm_ckpt_converter
+
+        inference_serv_proc = vllm_utils.start_server(init_vllm_model_path, config.inference_vllm_ip, config.inference_vllm_port, config.dtype, inference_device_no, config.inference_vllm_seed, "auto", 'INFO')
+        vllm_utils.wait_for_server(vllm_base_url, inference_serv_proc, 300) # wait for 300s
+        print('Inference server launched...\nNow attempt to sync up weights')
+
+        weight_sync_group = vllm_utils.init_weight_sync(vllm_base_url, config.device, rank_offset)
+        vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)
     else:
         raise NotImplementedError
 

@@ -2,6 +2,7 @@
 Small vLLM helpers for server lifecycle, completion requests, and NCCL weight sync.
 """
 
+from typing import Callable
 import atexit
 import json
 import logging
@@ -217,7 +218,7 @@ def generate_completions(
     return completions
 
 
-def init_weight_sync(vllm_base_url: str, policy_device: str):
+def init_weight_sync(vllm_base_url: str, policy_device: str, rank_offset: int):
     from vllm.distributed.weight_transfer.nccl_engine import NCCLWeightTransferEngine
     from vllm.utils.network_utils import get_ip, get_open_port
 
@@ -228,7 +229,7 @@ def init_weight_sync(vllm_base_url: str, policy_device: str):
     init_info = {
         "master_address": master_address,
         "master_port": master_port,
-        "rank_offset": 1,
+        "rank_offset": rank_offset, # difference between visible devices for vllm and trainer engine, 1 if cuda:0 for trainer and cuda:1 for inference; 2 if cuda:0 for trainer and cuda:2 for inference
         "world_size": world_size,
     }
 
@@ -253,7 +254,7 @@ def init_weight_sync(vllm_base_url: str, policy_device: str):
     return weight_sync_group
 
 
-def sync_policy_weights(policy: torch.nn.Module, vllm_base_url: str, weight_sync_group) -> None:
+def sync_policy_weights(policy: torch.nn.Module, vllm_base_url: str, weight_sync_group, weight_format_converter: None | Callable[[list[tuple[str, torch.nn.Parameter | torch.Tensor]]], list[tuple[str, torch.nn.Parameter | torch.Tensor]]]=None) -> None:
     """Copy policy weights into vLLM and invalidate caches derived from old weights."""
     from vllm.distributed.weight_transfer.nccl_engine import (
         NCCLTrainerSendWeightsArgs,
@@ -261,6 +262,8 @@ def sync_policy_weights(policy: torch.nn.Module, vllm_base_url: str, weight_sync
     )
 
     weights = list(policy.named_parameters())
+    if weight_format_converter is not None:
+        weights = weight_format_converter(weights)
     update_info = {
         "names": [name for name, _ in weights],
         "dtype_names": [str(tensor.dtype).split(".")[-1] for _, tensor in weights],
