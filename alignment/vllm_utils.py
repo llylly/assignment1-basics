@@ -26,6 +26,7 @@ class VLLMServer:
     model_id: str
     host: str = "127.0.0.1"
     port: int = 8000
+    dtype: str = 'bfloat16'
     gpu: int = 1
     seed: int = 0
     load_format: str = "auto"
@@ -47,6 +48,7 @@ class VLLMServer:
                 model_id=self.model_id,
                 host=self.host,
                 port=self.port,
+                dtype=self.dtype,
                 gpu=self.gpu,
                 seed=self.seed,
                 load_format=self.load_format,
@@ -296,4 +298,3 @@ def sync_policy_weights(policy: torch.nn.Module, vllm_base_url: str, weight_sync
         update_future.result()
     _http_json("POST", f"{vllm_base_url}/reset_prefix_cache", timeout=60)
     _http_json("POST", f"{vllm_base_url}/resume", timeout=60)
-    del weights
