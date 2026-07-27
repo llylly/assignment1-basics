@@ -115,7 +115,7 @@ def start_server(
     port: int,
     dtype: str,
     gpu: int,
-    seed: int,
+    seed: int | None,
     load_format: str,
     logging_level: str,
     gpu_memory_utilization: float = 0.9,
@@ -137,8 +137,13 @@ def start_server(
         "--enable-prefix-caching",
         "--gpu-memory-utilization",
         str(gpu_memory_utilization),
-        "--seed",
-        str(seed),
+    ]
+    if seed:
+        command += [
+            "--seed",
+            str(seed),
+        ]
+    command += [
         "--tensor-parallel-size",
         "1",
         "--weight-transfer-config",
@@ -270,6 +275,8 @@ def sync_policy_weights(policy: torch.nn.Module, vllm_base_url: str, weight_sync
         "shapes": [list(tensor.shape) for _, tensor in weights],
         "packed": True,
     }
+
+    print(update_info)
 
     torch.cuda.set_device(next(policy.parameters()).device)
     _http_json("POST", f"{vllm_base_url}/pause", timeout=60)

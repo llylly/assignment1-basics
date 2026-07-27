@@ -34,19 +34,17 @@ class GSM8KEvalConfig:
     vllm_ip: str = '127.0.0.1'
     vllm_port: int = 8080
 
-def gsm8k_question_grader(sample: dict, response: str, prompt_type: Literal['r1_zero', 'question_only', 'r1_zero_three_shot_gsm8k']) -> tuple[dict, dict]:
+def gsm8k_question_formulator(sample: dict, prompt_template: str) -> str:
+    return prompt_template.format(question=sample['question'])
+
+def gsm8k_question_grader(response: str, ground_truth: str, prompt_type: Literal['r1_zero', 'question_only', 'r1_zero_three_shot_gsm8k']) -> dict:
     # potentially modified queston_sample, along with grade result which is a dict containing at least 'reward': float
 
     if prompt_type == 'r1_zero' or prompt_type == 'r1_zero_three_shot_gsm8k':
         grade_fn = drgrpo_grader.r1_zero_reward_fn
     elif prompt_type == 'question_only':
         grade_fn = drgrpo_grader.question_only_reward_fn
-
-    final_answer = sample['answer'][sample['answer'].find('####') + 4:].strip()
-    rewards = grade_fn(response, final_answer, False)
-
-    sample['final_answer'] = final_answer
-    return rewards, sample
+    return grade_fn(response, ground_truth)
 
 def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=True, verbose=True):
 
@@ -73,22 +71,84 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
     if verbose: print('Loading model...')
     if eval_config.backend == 'vllm':
         if not eval_config.vllm_server_no_host:
-            serv_proc = vllm_utils.start_server(eval_config.model_dir, eval_config.vllm_ip, eval_config.vllm_port, eval_config.dtype, 0, 42, "auto", 'INFO')
+            serv_proc = vllm_utils.start_server(eval_config.model_dir, eval_config.vllm_ip, eval_config.vllm_port, eval_config.dtype, 0, None, "auto", 'INFO')
             vllm_utils.wait_for_server(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', serv_proc, 300)
     elif eval_config.backend == 'native':
         model, tokenizer = lmodeling_olmo.from_pretrained(eval_config.model_dir, eval_config.dtype, flash_attn=False) # for gsm8k, I don't see much benefit of using flash attn
 
 
     all_finished = []
-    now_cnt = 0
     
     avg_pass1 = {}
     avg_passn = {}
 
     try:
+        # test_data = test_data if eval_config.first_n_samp is None else test_data[:eval_config.first_n_samp]
+        # continuations = []
+        # for i in tqdm.tqdm(range(0, len(test_data) * eval_config.n, eval_config.batch_size)):
+        #     prompts = [gsm8k_question_formulator(test_data[j // eval_config.n], prompt_template) for j in range(i, min(i+eval_config.batch_size, len(test_data) * eval_config.n))]
+
+        #     if eval_config.backend == 'vllm':
+        #         ret = vllm_utils.generate_completions(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', eval_config.model_dir, prompts, {
+        #             'temperature': eval_config.temperature,
+        #             'max_tokens': eval_config.max_new_tokens,
+        #             'n': 1,
+        #             'seed': None,
+        #             'stop': ['</answer>'],
+        #             'include_stop_str_in_output': True,
+        #         }, None)
+        #     elif eval_config.backend == 'native':
+        #         ret = generate(model, prompts, tokenizer, eval_config.max_new_tokens, eval_config.temperature, extra_stop_tokens=['</answer>'], include_stop_str_in_output=True, verbose=False)
+        #     else:
+        #         raise NotImplementedError
+        #     continuations.extend(ret)
+
+        #     old_q_num = i // eval_config.n
+        #     new_q_num = min(i + eval_config.batch_size, len(test_data) * eval_config.n) // eval_config.n
+
+        #     for q_idx in range(old_q_num, new_q_num):
+        #         finished = {
+        #             'question': test_data[q_idx]['question'],
+        #             'prompt': gsm8k_question_formulator(test_data[q_idx], prompt_template),
+        #             'answer': test_data[q_idx]['answer'],
+        #             'continuations': continuations[q_idx * eval_config.n: (q_idx + 1) * eval_config.n]
+        #         }
+        #         grades = []
+
+        #         for j in range(eval_config.n):
+        #             final_answer = finished['answer'][finished['answer'].find('####') + 4:].strip()
+        #             finished['final_answer'] = final_answer
+        #             rewards = gsm8k_question_grader(finished['continuations'][j].text, final_answer, eval_config.prompt_type)
+
+        #             # contains format_reward, answer_reward, reward
+        #             rewards['stopped'] = float(int(finished['continuations'][j].finish_reason == 'stop'))
+        #             rewards['ans_len'] = len(finished['continuations'][j].token_ids)
+        #             rewards['raw_text'] = finished['continuations'][j].text
+        #             rewards['gt_ans'] = finished['final_answer']
+        #             grades.append(rewards)
+
+        #         finished['grades'] = grades
+        #         del finished['continuations']
+                
+        #         pass1 = {}
+        #         passn = {}
+        #         for k in ['reward', 'answer_reward', 'format_reward', 'stopped', 'ans_len']:
+        #             pass1[k] = sum([item[k] for item in grades]) / len(grades)
+        #             passn[k] = max([item[k] for item in grades])
+        #             avg_pass1[k] = (avg_pass1.get(k, 0.0) * q_idx + pass1[k]) / (q_idx + 1)
+        #             avg_passn[k] = (avg_passn.get(k, 0.0) * q_idx + passn[k]) / (q_idx + 1)
+        #             print(f'{k:20}: now pass1 = {pass1[k]:5.3f} tot pass1 = {avg_pass1[k]:5.3f} now passn = {passn[k]:5.3f} tot passn = {avg_passn[k]:5.3f}')
+        #         finished['pass1'] = pass1
+        #         finished['passn'] = passn
+
+        #         all_finished.append(finished)
+        #         if launch_wandb:
+        #             wandb.log({'pass1': pass1, 'passn': passn, 'avg_pass1': avg_pass1, 'avg_passn': avg_passn, 'time_spent': time.time() - stime}, step=q_idx)
+
+        # =========== OLD VERSION ===========
+        now_cnt = 0
         for item in tqdm.tqdm(test_data if eval_config.first_n_samp is None else test_data[:eval_config.first_n_samp]):
-            raw_question = item['question']
-            templated_question = prompt_template.format(question=raw_question)
+            templated_question = gsm8k_question_formulator(item, prompt_template)
             continuations = []
             while len(continuations) < eval_config.n:
                 amounts_to_gen = min(eval_config.n - len(continuations), eval_config.batch_size)
@@ -126,8 +186,10 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
                 # except Exception:
                 #     rewards = grade_fn(finished['continuations'][i].text, final_answer, True)
                 # p.close()
-                
-                rewards, _ = gsm8k_question_grader(item, finished['continuations'][i].text, eval_config.prompt_type)
+
+                final_answer = item['answer'][item['answer'].find('####') + 4:].strip()
+                item['final_answer'] = final_answer
+                rewards = gsm8k_question_grader(finished['continuations'][i].text, final_answer, eval_config.prompt_type)
 
                 # contains format_reward, answer_reward, reward
                 rewards['stopped'] = float(int(finished['continuations'][i].finish_reason == 'stop'))
@@ -155,12 +217,8 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
             if launch_wandb:
                 wandb.log({'pass1': pass1, 'passn': passn, 'avg_pass1': avg_pass1, 'avg_passn': avg_passn, 'time_spent': time.time() - stime}, step=now_cnt)
     
-    except KeyboardInterrupt:
+    finally:
         if eval_config.backend == 'vllm' and not eval_config.vllm_server_no_host:
-            vllm_utils.stop_server(serv_proc)
-        return
-    
-    if eval_config.backend == 'vllm' and not eval_config.vllm_server_no_host:
             vllm_utils.stop_server(serv_proc)
     
     if dump_file:
@@ -180,19 +238,19 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
         print(os.path.join(eval_config.save_dir, run_name + '.summary.log'))
         print(os.path.join(eval_config.save_dir, run_name + '.config.log'))
 
-    print('Done.')
-
     # sanitize
     resource.setrlimit(resource.RLIMIT_STACK, (soft_rlimit, hard_rlimit))
 
+    return {'avg_pass1': avg_pass1, 'avg_passn': avg_passn}, all_finished
+
 """
 Example commands:
-uv run alignment/lgsm8k_eval.py --backend vllm --prompt_type r1_zero
-uv run alignment/lgsm8k_eval.py --backend vllm --prompt_type r1_zero_three_shot_gsm8k
-uv run alignment/lgsm8k_eval.py --backend vllm --prompt_type question_only
-uv run alignment/lgsm8k_eval.py --backend native --prompt_type r1_zero
-uv run alignment/lgsm8k_eval.py --backend native --prompt_type r1_zero_three_shot_gsm8k
-uv run alignment/lgsm8k_eval.py --backend native --prompt_type question_only
+uv run alignment/benchmarks/lgsm8k_eval.py --backend vllm --prompt_type r1_zero
+uv run alignment/benchmarks/lgsm8k_eval.py --backend vllm --prompt_type r1_zero_three_shot_gsm8k
+uv run alignment/benchmarks/lgsm8k_eval.py --backend vllm --prompt_type question_only
+uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type r1_zero
+uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type r1_zero_three_shot_gsm8k
+uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type question_only
 """
 if __name__ == '__main__':
     config = tyro.cli(GSM8KEvalConfig)

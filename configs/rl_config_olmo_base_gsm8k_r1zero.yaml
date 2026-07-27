@@ -2,7 +2,8 @@
   "base_model_ckpt": "models/OLMo-2-0425-1B",
   "base_model_format": "olmo_hf",
   "task_name": "gsm8k",
-  "save_path": "models/olmo2_1B_base_rl_gsm8k",
+  "prompt_template": "alignment/prompts/r1_zero.prompt",
+  "save_path": "models/rl/olmo2_1B_gsm8k/base_rl_r1zero",
   "train_data": "data/gsm8k/train.jsonl",
   "val_data": "data/gsm8k/test.jsonl",
   "trainer": {

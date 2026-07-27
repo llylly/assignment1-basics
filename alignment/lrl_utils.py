@@ -185,7 +185,6 @@ def lolmo2_to_vllm_weights_converter(lweights: Iterable[tuple[str, torch.nn.Para
         ]]):
             break
         num_layers += 1
-        print(num_layers)
     assert len(list(lweights)) == 3 + 11 * num_layers
 
     ans: list[tuple[str, torch.nn.Parameter | torch.Tensor]] = [
@@ -202,22 +201,14 @@ def lolmo2_to_vllm_weights_converter(lweights: Iterable[tuple[str, torch.nn.Para
             (f'model.layers.{l}.mlp.down_proj.weight', lweight_dict[f'layers.{l}.mlp.down_proj.weight']),
             (f'model.layers.{l}.post_feedforward_layernorm.weight', lweight_dict[f'layers.{l}.post_feedforward_layernorm.weight']),
 
-            (f'model.layers.{l}.self_attn.qkv_proj.weight', torch.cat([lweight_dict[f'layers.{l}.self_attn.{item}.weight'] for item in ['q_proj', 'k_proj', 'v_proj']], dim=0)),
-            (f'model.layers.{l}.mlp.gate_up_proj.weight', torch.cat([lweight_dict[f'layers.{l}.mlp.{item}.weight'] for item in ['gate_proj', 'up_proj']], dim=0))
+            (f'model.layers.{l}.self_attn.q_proj.weight', lweight_dict[f'layers.{l}.self_attn.q_proj.weight']),
+            (f'model.layers.{l}.self_attn.k_proj.weight', lweight_dict[f'layers.{l}.self_attn.k_proj.weight']),
+            (f'model.layers.{l}.self_attn.v_proj.weight', lweight_dict[f'layers.{l}.self_attn.v_proj.weight']),
+            (f'model.layers.{l}.mlp.gate_proj.weight', lweight_dict[f'layers.{l}.mlp.gate_proj.weight']),
+            (f'model.layers.{l}.mlp.up_proj.weight', lweight_dict[f'layers.{l}.mlp.up_proj.weight']),
+            # VLLM secretly merge internally, so we don't need to care stacking by ourselves
+            # (f'model.layers.{l}.self_attn.qkv_proj.weight', torch.cat([lweight_dict[f'layers.{l}.self_attn.{item}.weight'] for item in ['q_proj', 'k_proj', 'v_proj']], dim=0)),
+            # (f'model.layers.{l}.mlp.gate_up_proj.weight', torch.cat([lweight_dict[f'layers.{l}.mlp.{item}.weight'] for item in ['gate_proj', 'up_proj']], dim=0))
         ])
 
     return ans
-
-if __name__ == '__main__':
-    # test of weights_converter
-    from basics.lmodeling_olmo import from_pretrained
-    model, tokenizer = from_pretrained('models/OLMo-2-0425-1B', 'bfloat16', 'cuda:1', flash_attn=True)
-    inputs = [[k, list(v.shape)] for k, v in model.named_parameters()]
-
-    from vllm import LLM
-    llm = LLM(model='models/OLMo-2-0425-1B')
-    desired_outputs = llm.apply_model(lambda x: [[k, list(v.shape)] for k, v in x.named_parameters()])[0]
-
-    outputs = lolmo2_to_vllm_weights_converter(list(model.named_parameters()))
-    output_shapes = [[k, list(v.shape)] for k, v in outputs]
-    assert set(output_shapes) == set(desired_outputs)
