@@ -168,7 +168,7 @@ def grpo_train_step(
 
         with torch.no_grad():
             batch_loss = batch_loss + microbatch_loss
-            mean_token_entropy += ((token_entropy * response_masks[i: i+micro_batch_size]).sum(dim=-1) / response_masks[i: i+micro_batch_size].sum(dim=-1)).sum() * actual_batch_size / macro_batch_size
+            mean_token_entropy += ((token_entropy * response_masks[i: i+micro_batch_size]).sum(dim=-1) / response_masks[i: i+micro_batch_size].sum(dim=-1)).sum() / macro_batch_size
 
     # stage 5: grad norm clipping & update weights for the mini-batch
     grad_norm = LGradientClipping(model.parameters(), max_grad_norm)
