@@ -44,7 +44,7 @@ def gsm8k_question_grader(response: str, ground_truth: str, prompt_type: Literal
         grade_fn = drgrpo_grader.r1_zero_reward_fn
     elif prompt_type == 'question_only':
         grade_fn = drgrpo_grader.question_only_reward_fn
-    return grade_fn(response, ground_truth)
+    return grade_fn(response, ground_truth, fast=False)
 
 def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=True, verbose=True):
 
