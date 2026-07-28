@@ -72,7 +72,7 @@ class RLConfig:
     trainer: RLTrainerConfig
     base_model_ckpt: str
     """Huggingface-style or LLLM-style base model dir, contain all information such as weights, tokenizer, and the architecture str"""
-    base_model_format: Literal['olmo_hf', 'olmo_lllm']
+    base_model_format: Literal['olmo_hf', 'lllm']
     # """Now only support Olmo models """
     task_name: Literal['gsm8k']
     """use the task_name to locate templated formulator method, grader method, and test method"""
@@ -89,9 +89,9 @@ class RLConfig:
     resume_path: str | None = None
     """if exists, it can overwrite base_model_ckpt"""
     tokenizer_path: str | None = None
-    # """if base_model_format == 'olmo_lllm', need to specify tokenizer_path"""
+    # """if base_model_format == 'lllm', need to specify tokenizer_path"""
     model_config: str | None = None
-    # """if base_model_format == 'olmo_lllm', need to specify model_config"""
+    # """if base_model_format == 'lllm', need to specify model_config"""
     inference_backend: Literal['vllm', 'lllm'] = 'vllm'
     inference_device: str='cuda:1'
     inference_vllm_server_no_host: bool = False # in this case, assume the host is already there
@@ -100,7 +100,7 @@ class RLConfig:
     inference_vllm_seed: int | None = None #42
     inference_vllm_dummy_model_path: str | None = None
     inference_vllm_gpu_memory_utilization: float = 0.8
-    # if base_model_format == 'olmo_lllm', we need a dummy hf model path to launch vllm inference engine
+    # if base_model_format == 'lllm', we need a dummy hf model path to launch vllm inference engine
     run_name: str | None = ''
     """run_name is appended to both save_path and wandb"""
     val_step: int = 20
@@ -212,12 +212,14 @@ if __name__ == '__main__':
     
     # config parameter validation
     assert config.trainer.batch_size % config.trainer.group_size == 0
-    if config.base_model_format == 'olmo_lllm':
-        assert config.inference_vllm_dummy_model_path is not None, "if base_model_format == 'olmo_lllm', we need a dummy hf model path to launch vllm inference engine"
-        assert config.tokenizer_path is not None, "if base_model_format == 'olmo_lllm', need to specify tokenizer_path"
-        assert config.model_config is not None, "if base_model_format == 'olmo_lllm', need to specify model_config"
+    if config.base_model_format == 'lllm':
+        assert config.inference_vllm_dummy_model_path is not None, "if base_model_format == 'lllm', we need a dummy hf model path to launch vllm inference engine"
+        assert config.tokenizer_path is not None, "if base_model_format == 'lllm', need to specify tokenizer_path"
+        assert config.model_config is not None, "if base_model_format == 'lllm', need to specify model_config"
     assert config.inference_backend == 'vllm', 'backend engine from our own lllm is not supported yet until I know how to dynamically update engine weights'
     assert config.inference_device.startswith('cuda:'), 'VLLM inference device should be of the format cuda:X'
+    if config.inference_backend == 'vllm':
+        assert config.device != config.inference_device, 'If using vllm, should be on different devices'
     if config.trainer.rollout_batch_size is not None:
         assert config.trainer.batch_size % config.trainer.rollout_batch_size == 0
 
@@ -238,7 +240,7 @@ if __name__ == '__main__':
 
     # construct model and optimizer
     print('Loading model and optimizer...')
-    if config.base_model_format == 'olmo_lllm':
+    if config.base_model_format == 'lllm':
         with open(config.model_config, 'r') as f:
             model_config = yaml.safe_load(f)
         dtype = {'bfloat16': torch.bfloat16, 'float32': torch.float}[config.dtype]
@@ -282,7 +284,7 @@ if __name__ == '__main__':
     # launch vllm server, then replace dummy parameter with the real one
     print('Setting up vllm server...')
     if config.inference_backend == 'vllm':
-        if config.base_model_format == 'olmo_lllm':
+        if config.base_model_format == 'lllm':
             init_vllm_model_path = config.inference_vllm_dummy_model_path
         else:
             init_vllm_model_path = config.base_model_ckpt
@@ -290,8 +292,11 @@ if __name__ == '__main__':
         rank_offset = 1
         vllm_base_url = f'http://{config.inference_vllm_ip}:{config.inference_vllm_port}'
         weight_format_converter = None
-        if config.base_model_format in ['olmo_lllm', 'olmo_hf']:
+        if config.base_model_format in ['olmo_hf']:
+            from basics.lmodeling_olmo import lolmo2_to_vllm_weights_converter
             weight_format_converter = lolmo2_to_vllm_weights_converter
+        else:
+            raise NotImplementedError
 
         vllm_sampling_params = {
             'temperature': config.trainer.rollout_temperature,
@@ -453,8 +458,12 @@ if __name__ == '__main__':
                     os.makedirs(save_path / 'ckpts')
                 save_checkpoint(model, optimizer, now_step, ckpt_save_path)
 
-            if now_step == config.trainer.tot_steps - 1:
-                print(json.dumps({k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in train_metadata.items()}, indent=2))
+                if now_step == config.trainer.tot_steps - 1:
+                    print(json.dumps({k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in train_metadata.items()}, indent=2))
+
+                    if config.base_model_format == 'olmo_hf':
+                        from basics.lmodeling_olmo import lllm_ckpt_to_hf_ckpt
+                        lllm_ckpt_to_hf_ckpt(str(ckpt_save_path), config.base_model_ckpt, str(save_path / 'hf_ckpts' / f'step_{now_step:07}'))
 
     finally:
         # sanitize

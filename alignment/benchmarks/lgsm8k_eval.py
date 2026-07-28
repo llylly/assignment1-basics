@@ -180,6 +180,7 @@ uv run alignment/benchmarks/lgsm8k_eval.py --backend vllm --prompt_type question
 uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type r1_zero
 uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type r1_zero_three_shot_gsm8k
 uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type question_only
+uv run alignment/benchmarks/lgsm8k_eval.py --backend vllm --prompt_type r1_zero --run-suffix rleval --model-dir models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/hf_ckpts/step_0000199 --batch-size 256
 """
 if __name__ == '__main__':
     config = tyro.cli(GSM8KEvalConfig)

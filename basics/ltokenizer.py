@@ -376,6 +376,7 @@ class LTokenizer:
         vocab_path = os.path.join(model_dir, 'vocab.json')
         merges_path = os.path.join(model_dir, 'merges.txt')
         tokenizer_cfg_path = os.path.join(model_dir, 'tokenizer_config.json')
+        tokenizer_path = os.path.join(model_dir, 'tokenizer.json')
         vocabs = {vocab_encoding[v]: k for k, v in self.vocab.items()}
         with open(vocab_path, 'w') as f:
             json.dump(vocabs, f, ensure_ascii=False)
@@ -405,6 +406,53 @@ class LTokenizer:
                 "unk_token": self.eos_token if self.eos_token else self.special_tokens[0] if self.special_tokens else '',
             }
             print(json.dumps(configs, indent=2), file=f)
+        with open(tokenizer_path, 'w') as f:
+            complete_configs = {
+                "version": "1.0",
+                "truncation": None,
+                "padding": None,
+                "added_tokens": [value | {'id': int(id)} for id, value in configs["added_tokens_decoder"].items()],
+                "normalizer": None,
+                "pre_tokenizer": {
+                    "type": "Sequence",
+                    "pretokenizers": [
+                    {
+                        "type": "Split",
+                        "pattern": {
+                        "Regex": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+                        },
+                        "behavior": "Removed",
+                        "invert": True
+                    },
+                    {
+                        "type": "ByteLevel",
+                        "add_prefix_space": False,
+                        "trim_offsets": True,
+                        "use_regex": False
+                    }
+                    ]
+                },
+                "post_processor": None,
+                "decoder": {
+                    "type": "ByteLevel",
+                    "add_prefix_space": True,
+                    "trim_offsets": True,
+                    "use_regex": True
+                },
+                "model": {
+                    "type": "BPE",
+                    "dropout": None,
+                    "unk_token": None,
+                    "continuing_subword_prefix": "",
+                    "end_of_word_suffix": "",
+                    "fuse_unk": False,
+                    "byte_fallback": False,
+                    "ignore_merges": False,
+                    "vocab": vocabs,
+                    "merges": [[vocab_encoding[a], vocab_encoding[b]] for a, b in self.merges]
+                }
+            }
+            print(json.dumps(complete_configs, indent=2, ensure_ascii=False), file=f)
 
     def encode(self, text: str) -> list[int]:
         chunks = []

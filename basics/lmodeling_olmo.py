@@ -2,6 +2,10 @@
     Additional components to support OLMo models
 """
 import os
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Iterable, Literal
+import tyro
 import json
 import safetensors
 import torch
@@ -96,12 +100,136 @@ def from_pretrained(model_dir: str, dtype=None, device='cuda', flash_attn=False)
 
     return model, tokenizer
 
-if __name__ == '__main__':
-    model, tokenizer = from_pretrained('models/OLMo-2-0425-1B', 'bfloat16', flash_attn=True)
-    from basics.linference import generate
+
+# weight converters
+def lolmo2_to_vllm_weights_converter(lweights: Iterable[tuple[str, torch.nn.Parameter | torch.Tensor]]) -> list[tuple[str, torch.nn.Parameter | torch.Tensor]]:
+    # first, remove the side effect of torch.compile
+    lweight_dict = dict([(k.replace('._orig_mod', ''), v) for k, v in lweights])
+    assert 'embed_tokens.weight' in lweight_dict
+    assert 'norm.weight' in lweight_dict
+    assert 'lm_head.weight' in lweight_dict
+    num_layers = 0
     while True:
-        prompt = input('\n> ')
-        if not prompt:
+        if any([not (f'layers.{num_layers}.{item}.weight' in lweight_dict) for item in [
+            'self_attn.q_proj',
+            'self_attn.k_proj',
+            'self_attn.v_proj',
+            'self_attn.q_norm',
+            'self_attn.k_norm',
+            'self_attn.o_proj',
+            'post_attention_layernorm',
+            'mlp.gate_proj',
+            'mlp.up_proj',
+            'mlp.down_proj',
+            'post_feedforward_layernorm',
+        ]]):
             break
-        ret = generate(model, [prompt], tokenizer, max_new_tokens=1024, temperature=0.2)
-        # print(ret)
+        num_layers += 1
+    assert len(list(lweights)) == 3 + 11 * num_layers
+
+    ans: list[tuple[str, torch.nn.Parameter | torch.Tensor]] = [
+        ('model.embed_tokens.weight', lweight_dict['embed_tokens.weight']),
+        ('model.norm.weight', lweight_dict['norm.weight']),
+        ('lm_head.weight', lweight_dict['lm_head.weight'])
+    ]
+    for l in range(num_layers):
+        ans.extend([
+            (f'model.layers.{l}.self_attn.q_norm.weight', lweight_dict[f'layers.{l}.self_attn.q_norm.weight']),
+            (f'model.layers.{l}.self_attn.k_norm.weight', lweight_dict[f'layers.{l}.self_attn.k_norm.weight']),
+            (f'model.layers.{l}.self_attn.o_proj.weight', lweight_dict[f'layers.{l}.self_attn.o_proj.weight']),
+            (f'model.layers.{l}.post_attention_layernorm.weight', lweight_dict[f'layers.{l}.post_attention_layernorm.weight']),
+            (f'model.layers.{l}.mlp.down_proj.weight', lweight_dict[f'layers.{l}.mlp.down_proj.weight']),
+            (f'model.layers.{l}.post_feedforward_layernorm.weight', lweight_dict[f'layers.{l}.post_feedforward_layernorm.weight']),
+
+            (f'model.layers.{l}.self_attn.q_proj.weight', lweight_dict[f'layers.{l}.self_attn.q_proj.weight']),
+            (f'model.layers.{l}.self_attn.k_proj.weight', lweight_dict[f'layers.{l}.self_attn.k_proj.weight']),
+            (f'model.layers.{l}.self_attn.v_proj.weight', lweight_dict[f'layers.{l}.self_attn.v_proj.weight']),
+            (f'model.layers.{l}.mlp.gate_proj.weight', lweight_dict[f'layers.{l}.mlp.gate_proj.weight']),
+            (f'model.layers.{l}.mlp.up_proj.weight', lweight_dict[f'layers.{l}.mlp.up_proj.weight']),
+            # VLLM secretly merge internally, so we don't need to care stacking by ourselves
+            # (f'model.layers.{l}.self_attn.qkv_proj.weight', torch.cat([lweight_dict[f'layers.{l}.self_attn.{item}.weight'] for item in ['q_proj', 'k_proj', 'v_proj']], dim=0)),
+            # (f'model.layers.{l}.mlp.gate_up_proj.weight', torch.cat([lweight_dict[f'layers.{l}.mlp.{item}.weight'] for item in ['gate_proj', 'up_proj']], dim=0))
+        ])
+
+    return ans
+
+
+def to_hf_pretrained(model: LOlmo2TransformerLM, tokenizer: LTokenizer, output_dir: str):
+    import safetensors
+    import safetensors.torch
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    tokenizer.save_hf_pretrained(output_dir)
+    converted_weights = lolmo2_to_vllm_weights_converter(list(model.named_parameters()))
+    converted_weights_dict = dict(converted_weights)
+    safetensors.torch.save_file(converted_weights_dict, Path(output_dir) / 'model-00001-of-00001.safetensors')
+    index_dict = {
+        'metadata': {'total_size': model.count_parameters()[0] * 2}, # assume bf16
+        'weight_map': {item: 'model-00001-of-00001.safetensors' for item, _ in converted_weights}
+    }
+    with open(Path(output_dir) / 'model.safetensors.index.json', 'w') as f:
+        json.dump(index_dict, indent=2, fp=f)
+    config_dict = {
+        "architectures": [
+            "Olmo2ForCausalLM"
+        ],
+        "attention_bias": False,
+        "attention_dropout": 0.0,
+        "hidden_act": "silu",
+        "hidden_size": converted_weights_dict['model.embed_tokens.weight'].shape[1],
+        "initializer_range": 0.02,
+        "intermediate_size": converted_weights_dict['model.layers.0.mlp.up_proj.weight'].shape[0],
+        "max_position_embeddings": model.max_seq_len,
+        "model_type": "olmo2",
+        "num_attention_heads": getattr(getattr(model, model.param_maps['layers'])[0],getattr(model, model.param_maps['layers'])[0].param_maps['attn']).num_attention_heads,
+        "num_hidden_layers": len(getattr(model, model.param_maps['layers'])),
+        "num_key_value_heads": getattr(getattr(model, model.param_maps['layers'])[0],getattr(model, model.param_maps['layers'])[0].param_maps['attn']).num_key_value_heads,
+        "rms_norm_eps": getattr(getattr(model, model.param_maps['layers'])[0],getattr(model, model.param_maps['layers'])[0].param_maps['ln1']).eps,
+        "rope_scaling": None,
+        "rope_theta": model.rope_cache.theta,
+        "tie_word_embeddings": False,
+        "torch_dtype": "bfloat16",
+        "transformers_version": "4.50.3",
+        "use_cache": True,
+        "vocab_size": converted_weights_dict['model.embed_tokens.weight'].shape[0]
+    }
+    with open(Path(output_dir) / 'config.json', 'w') as f:
+        json.dump(config_dict, indent=2, fp=f)
+
+def lllm_ckpt_to_hf_ckpt(in_model_ckpt_pth: str, in_base_hf_model_path: str, out_dir: str):
+    model, tokenizer = from_pretrained(in_base_hf_model_path, dtype='bfloat16', device='cpu') # by default write in bf16 to save space
+    model.load_state_dict(torch.load(in_model_ckpt_pth, map_location='cpu')['model'])
+    return to_hf_pretrained(model, tokenizer, out_dir)
+
+
+@dataclass
+class Usage:
+    intent: Literal['inference', 'convert'] = 'inference'
+    model_path: str = 'models/OLMo-2-0425-1B'
+    base_model_path: str | None = None
+    output_path: str | None = None
+    device: str = 'cuda'
+
+"""
+Usage example:
+uv run python basics/lmodeling_olmo.py
+uv run python basics/lmodeling_olmo.py --model-path models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/hf_ckpts/step_0000150
+uv run python basics/lmodeling_olmo.py --intent convert --model-path models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/ckpts/step_0000199.pth --base-model-path models/OLMo-2-0425-1B --output-path models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/hf_ckpts/step_0000199
+"""
+if __name__ == '__main__':
+    usage = tyro.cli(Usage)
+    if usage.intent == 'inference':
+        model, tokenizer = from_pretrained(usage.model_path, 'bfloat16', device=device, flash_attn=True)
+        from basics.linference import generate
+        while True:
+            prompt = input('\n> ')
+            if not prompt:
+                break
+            ret = generate(model, [prompt], tokenizer, max_new_tokens=1024, temperature=0.2)
+            # print(ret)
+    elif usage.intent == 'convert':
+        assert usage.base_model_path
+        assert usage.output_path
+        lllm_ckpt_to_hf_ckpt(usage.model_path, usage.base_model_path, usage.output_path)
+    else:
+        raise NotImplementedError
