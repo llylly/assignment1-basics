@@ -20,6 +20,7 @@ from alignment import drgrpo_grader
 class GSM8KEvalConfig:
     backend: Literal['native', 'vllm'] = 'native' # 'vllm' / 'native'
     dtype: Literal['bfloat16', 'float32'] = 'bfloat16' # or 'float32'
+    device: str = 'cuda'
     prompt_type: Literal['r1_zero', 'question_only', 'r1_zero_three_shot_gsm8k'] = 'r1_zero' # or 'question_only'
     max_new_tokens: int = 512
     temperature: float = 1.0
@@ -71,10 +72,10 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
     if verbose: print('Loading model...')
     if eval_config.backend == 'vllm':
         if not eval_config.vllm_server_no_host:
-            serv_proc = vllm_utils.start_server(eval_config.model_dir, eval_config.vllm_ip, eval_config.vllm_port, eval_config.dtype, 0, None, "auto", 'INFO')
+            serv_proc = vllm_utils.start_server(eval_config.model_dir, eval_config.vllm_ip, eval_config.vllm_port, eval_config.dtype, int(eval_config.device[5:]) if len(eval_config.device) > 4 else 0, None, "auto", 'INFO')
             vllm_utils.wait_for_server(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', serv_proc, 300)
     elif eval_config.backend == 'native':
-        model, tokenizer = lmodeling_olmo.from_pretrained(eval_config.model_dir, eval_config.dtype, flash_attn=False) # for gsm8k, I don't see much benefit of using flash attn
+        model, tokenizer = lmodeling_olmo.from_pretrained(eval_config.model_dir, eval_config.dtype, eval_config.device, flash_attn=False) # for gsm8k, I don't see much benefit of using flash attn
 
 
     all_finished = []
@@ -99,7 +100,7 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
                     'include_stop_str_in_output': True,
                 }, None)
             elif eval_config.backend == 'native':
-                ret = generate(model, prompts, tokenizer, eval_config.max_new_tokens, eval_config.temperature, extra_stop_tokens=['</answer>'], include_stop_str_in_output=True, verbose=False)
+                ret = generate(model, prompts, tokenizer, eval_config.max_new_tokens, eval_config.temperature, device=eval_config.device, extra_stop_tokens=['</answer>'], include_stop_str_in_output=True, verbose=False)
             else:
                 raise NotImplementedError
             continuations.extend(ret)
@@ -181,6 +182,7 @@ uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type r1_zer
 uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type r1_zero_three_shot_gsm8k
 uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type question_only
 uv run alignment/benchmarks/lgsm8k_eval.py --backend vllm --prompt_type r1_zero --run-suffix rleval --model-dir models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/hf_ckpts/step_0000199 --batch-size 256
+uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type r1_zero --run-suffix rleval --model-dir models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/hf_ckpts/step_0000199 --batch-size 192 --device cuda:1
 """
 if __name__ == '__main__':
     config = tyro.cli(GSM8KEvalConfig)
