@@ -181,14 +181,15 @@ def grpo_train_step(
     raw_rewards_metadata_agg = {}
     for k in raw_rewards_metadatas[0]:
         raw_rewards_metadata_agg[k] = sum([item[k] for item in raw_rewards_metadatas]) / len(raw_rewards_metadatas)
-    advantage_metadata_agg = {k: sum(v) / len(v) for k, v in advantage_metadata.items()}
+    advantage_metadata_agg = {k: (sum(v) / len(v)) if isinstance(v, list) else v for k, v in advantage_metadata.items()}
     metadata = {
         'num_prompts': num_prompts,
         'micro_batch_size': micro_batch_size,
         'macro_batch_size': macro_batch_size,
         'token_entropy': mean_token_entropy,
         'grad_norm': grad_norm,
-        'ctx_len': input_ids.shape[-1]
+        'ctx_len': input_ids.shape[-1],
+        'min_response_len': tokenized['response_mask'].sum(dim=-1).amin(dim=-1)
     } | raw_rewards_metadata_agg | advantage_metadata_agg
 
     return batch_loss, metadata
@@ -197,6 +198,12 @@ def grpo_train_step(
 Usage:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 (on RTX 6000 Ada)
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --trainer.gradient_accumulation_steps 32 (on H100)
+Learning rate ablation:
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --run-name lr_2e-5
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --run-name lr_5e-6
+Prompt ablation:
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/question_only.prompt" --run-name prpt_qonly
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/r1_zero_three_shot_gsm8k.prompt" --run-name prpt_3shot
 """
 
 if __name__ == '__main__':
@@ -389,7 +396,8 @@ if __name__ == '__main__':
                 rollout_completions = vllm_utils.generate_completions(vllm_base_url, init_vllm_model_path, prompts, vllm_sampling_params, config.trainer.rollout_batch_size)
             else:
                 raise NotImplementedError
-            rollout_responses = [c.text for c in rollout_completions]
+            rollout_responses = [c.text if c.text else ' ' for c in rollout_completions]
+            # empty thing to prevent empty response which results in div0 error.
 
             rollout_metadata = {
                 'length/mean': sum([len(c.token_ids) for c in rollout_completions]) / len(rollout_completions),
@@ -401,9 +409,9 @@ if __name__ == '__main__':
             loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.loss_normalization, config.trainer.normalization_constant)
 
             print('Logging...')
-            train_metadata = metadata | rollout_metadata | {'loss': loss.item(), 'time': time.time() - stime}
+            train_metadata = metadata | rollout_metadata | {'loss': loss.item(), 'time': time.time() - stime, 'lr': now_lr}
             train_metadata = {('train/' + k): v for k, v in train_metadata.items()}
-            print('\n'.join([k + '=' + (f'{train_metadata[k].item()}' if isinstance(train_metadata[k], torch.Tensor) else f'{train_metadata[k]}') for k in ['train/loss', 'train/grad_norm', 'train/token_entropy', 'train/length/mean', 'train/reward/mean']]))
+            print('\n'.join([k + '=' + (f'{train_metadata[k].item()}' if isinstance(train_metadata[k], torch.Tensor) else f'{train_metadata[k]}') for k in ['train/loss', 'train/grad_norm', 'train/token_entropy', 'train/length/mean', 'train/reward/mean', 'train/min_response_len']]))
             wandb.log(train_metadata, step=now_step)
 
             print('Weight sync...')
@@ -457,6 +465,7 @@ if __name__ == '__main__':
                 if not os.path.exists(save_path / 'ckpts'):
                     os.makedirs(save_path / 'ckpts')
                 save_checkpoint(model, optimizer, now_step, ckpt_save_path)
+                print(f'Checkpoint saved to {ckpt_save_path}')
 
                 if now_step == config.trainer.tot_steps - 1:
                     print(json.dumps({k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in train_metadata.items()}, indent=2))
@@ -464,6 +473,7 @@ if __name__ == '__main__':
                     if config.base_model_format == 'olmo_hf':
                         from basics.lmodeling_olmo import lllm_ckpt_to_hf_ckpt
                         lllm_ckpt_to_hf_ckpt(str(ckpt_save_path), config.base_model_ckpt, str(save_path / 'hf_ckpts' / f'step_{now_step:07}'))
+                        print(f'Huggingface format checkpoint saved to {ckpt_save_path}')
 
     finally:
         # sanitize

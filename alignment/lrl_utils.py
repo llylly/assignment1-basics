@@ -118,6 +118,9 @@ def compute_group_normalized_rewards(
         'advantage/max':  advantages.amax(dim=-1).tolist(),
         'advantage/min':  advantages.amin(dim=-1).tolist(),
         'advantage/std':  advantages.std(dim=-1, unbiased=True).tolist(),
+        'group/all_zero_ratio': sum(group_mean <= 0.01) / group_mean.numel(),
+        'group/all_one_ratio': sum(group_mean >= 0.99) / group_mean.numel(),
+        'group/active_group_ratio': 1. - (sum(group_mean <= 0.01) + sum(group_mean >= 0.99)) / group_mean.numel()
     }
     advantages = advantages.view(-1)
     return advantages, metadata
