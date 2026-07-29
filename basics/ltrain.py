@@ -56,6 +56,8 @@ class PretrainConfig:
     save_step: int = 1000
     debug: bool = False 
     """if debug, dump more statistics (act norm, grad norm per layer) on wandb"""
+    git_hash: str = ''
+    """Keep track of commit id, will auto populate"""
 
 """
 Example Usage:
@@ -124,6 +126,7 @@ if __name__ == '__main__':
     config.save_path += nowtime
     if not os.path.exists(config.save_path):
         os.makedirs(config.save_path)
+    config.git_hash = get_git_hash() or config.git_hash
     with open(os.path.join(config.save_path, 'configs.json'), 'w') as f:
         json.dump(asdict(config), f, indent=2)
     print(json.dumps(asdict(config), indent=2))

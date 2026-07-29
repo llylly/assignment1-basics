@@ -42,6 +42,18 @@ def dict_to_dataclass(cls, d):
             kwargs[k] = v
     return cls(**kwargs)
 
+def get_git_hash() -> str | None:
+    try:
+        with open(".git/HEAD", "r") as f:
+            head_content = f.read().strip()
+        if head_content.startswith("ref:"):
+            ref_path = head_content.split(" ")[1]
+            with open(os.path.join(".git", ref_path), "r") as f:
+                return f.read().strip()
+        return head_content
+    except FileNotFoundError:
+        return None
+
 if __name__ == '__main__':
     from basics.lmodeling import LTransformerLM
     import yaml

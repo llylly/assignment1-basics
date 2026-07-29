@@ -24,7 +24,7 @@ import transformers
 from basics.ltokenizer import LTokenizer
 from basics.ltrain import LGradientClipping, save_checkpoint
 from basics.lopt import LSGD, LAdamW
-from basics.ltrain_utils import dict_to_dataclass, load_checkpoint
+from basics.ltrain_utils import dict_to_dataclass, load_checkpoint, get_git_hash
 from basics.lmodeling import LTransformerLM
 from alignment.benchmarks.lbenchmarks import *
 from alignment import vllm_utils
@@ -106,8 +106,11 @@ class RLConfig:
     val_step: int = 20
     rollout_save_step: int = 10
     ckpt_save_step: int = 50
+    logging_level: Literal["ERROR", "WARNING", "INFO"] = "INFO" # mainly used by vllm
     debug: bool = False 
     """if debug, dump more statistics (act norm, grad norm per layer) on wandb"""
+    git_hash: str = ''
+    """Keep track of commit id, will auto populate"""
 
 
 def grpo_train_step(
@@ -132,6 +135,7 @@ def grpo_train_step(
         # Loss normalization
         loss_normalization: Literal["sequence", "constant"] = "sequence",
         normalization_constant: int | None = None,
+        response_token_ids: list | None = None # if provided, no need to retokenized response to ensure inference-training consistency
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
 
     macro_batch_size = len(repeated_prompts)
@@ -150,7 +154,7 @@ def grpo_train_step(
     advantages, advantage_metadata = compute_group_normalized_rewards(raw_rewards, group_size, baseline, advantage_eps, advantage_normalizer)
 
     # stage 3: retokenize
-    tokenized = tokenize_prompt_and_output(repeated_prompts, rollout_responses, tokenizer)
+    tokenized = tokenize_prompt_and_output(repeated_prompts, rollout_responses, tokenizer, response_token_ids)
     input_ids, labels, response_masks = tokenized['input_ids'].to(model.device), tokenized['labels'].to(model.device), tokenized['response_mask'].to(model.device)
 
     # stage 4: within the microbatch, compute logits and update the model
@@ -189,7 +193,8 @@ def grpo_train_step(
         'token_entropy': mean_token_entropy,
         'grad_norm': grad_norm,
         'ctx_len': input_ids.shape[-1],
-        'min_response_len': tokenized['response_mask'].sum(dim=-1).amin(dim=-1)
+        'min_response_len': tokenized['response_mask'].sum(dim=-1).amin(dim=-1),
+        'max_response_len': tokenized['response_mask'].sum(dim=-1).amax(dim=-1)
     } | raw_rewards_metadata_agg | advantage_metadata_agg
 
     return batch_loss, metadata
@@ -200,7 +205,7 @@ uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.y
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --trainer.gradient_accumulation_steps 32 (on H100)
 Learning rate ablation:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --run-name lr_2e-5
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --run-name lr_5e-6
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.000005 --run-name lr_5e-6
 Prompt ablation:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/question_only.prompt" --run-name prpt_qonly
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/r1_zero_three_shot_gsm8k.prompt" --run-name prpt_3shot
@@ -239,6 +244,7 @@ if __name__ == '__main__':
     config.save_path += nowtime
     if not os.path.exists(config.save_path):
         os.makedirs(config.save_path)
+    config.git_hash = get_git_hash() or config.git_hash
     with open(Path(config.save_path) / 'configs.json', 'w') as f:
         json.dump(asdict(config), f, indent=2)
     print(json.dumps(asdict(config), indent=2))
@@ -265,7 +271,9 @@ if __name__ == '__main__':
         optimizer = LSGD(model.parameters(), config.trainer.learning_rate, config.trainer.beta1, config.trainer.weight_decay)
 
     if config.resume_path:
+        print('Resume loading...')
         start_step = load_checkpoint(config.resume_path, model, optimizer)
+        print('Resumed from', config.resume_path, 'at step', start_step)
     else:
         start_step = 0
 
@@ -314,7 +322,7 @@ if __name__ == '__main__':
             'include_stop_str_in_output': True,
         }
 
-        inference_serv_proc = vllm_utils.start_server(init_vllm_model_path, config.inference_vllm_ip, config.inference_vllm_port, config.dtype, inference_device_no, config.inference_vllm_seed, "auto", 'INFO', config.inference_vllm_gpu_memory_utilization)
+        inference_serv_proc = vllm_utils.start_server(init_vllm_model_path, config.inference_vllm_ip, config.inference_vllm_port, config.dtype, inference_device_no, config.inference_vllm_seed, "auto", config.logging_level, config.inference_vllm_gpu_memory_utilization)
         vllm_utils.wait_for_server(vllm_base_url, inference_serv_proc, 300) # wait for 300s
         print('Inference server launched...\nNow sync up initial weights')
 
@@ -397,7 +405,8 @@ if __name__ == '__main__':
             else:
                 raise NotImplementedError
             rollout_responses = [c.text if c.text else ' ' for c in rollout_completions]
-            # empty thing to prevent empty response which results in div0 error.
+            response_token_ids = [c.token_ids if len(c.token_ids) == 0 else [0] for c in rollout_completions]
+            # add thing to prevent empty response which results in div0 error.
 
             rollout_metadata = {
                 'length/mean': sum([len(c.token_ids) for c in rollout_completions]) / len(rollout_completions),
@@ -406,7 +415,7 @@ if __name__ == '__main__':
 
             print('Training...')
             # fully online RL
-            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.loss_normalization, config.trainer.normalization_constant)
+            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.loss_normalization, config.trainer.normalization_constant, response_token_ids=response_token_ids) # response_token_ids for debug
 
             print('Logging...')
             train_metadata = metadata | rollout_metadata | {'loss': loss.item(), 'time': time.time() - stime, 'lr': now_lr}

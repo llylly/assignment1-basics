@@ -8,14 +8,18 @@ from basics.lmodeling import LTransformerLM
 def tokenize_prompt_and_output(
         prompt_strs: list[str],
         output_strs: list[str],
-        tokenizer: PreTrainedTokenizerBase | LTokenizer
+        tokenizer: PreTrainedTokenizerBase | LTokenizer,
+        response_token_ids: list | None = None # if provided, no need to retokenized response to ensure inference-training consistency
     ) -> dict[str, torch.Tensor]:
     tokenized_prompts = []
     tokenized_outputs = []
     max_len = 0
-    for prompt, output in zip(prompt_strs, output_strs):
+    for i, (prompt, output) in enumerate(zip(prompt_strs, output_strs)):
         tok_prompt = tokenizer.encode(prompt)
-        tok_output = tokenizer.encode(output)
+        if response_token_ids is None:
+            tok_output = tokenizer.encode(output)
+        else:
+            tok_output = response_token_ids[i]
         tokenized_prompts.append(tok_prompt)
         tokenized_outputs.append(tok_output)
         max_len = max(len(tok_prompt) + len(tok_output) - 1, max_len)
