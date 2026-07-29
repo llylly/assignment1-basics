@@ -216,7 +216,7 @@ def grpo_train_step(
 Usage:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 (on RTX 6000 Ada)
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --trainer.gradient_accumulation_steps 32 (on H100)
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --inference_backend lllm --device cuda --inference_device cuda --trainer.gradient_accumulation_steps 128 --trainer.rollout_batch_size 8 --run-name 4090 (on single 4090)
+taskset -c 0-5,8-31 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --inference_backend lllm --device cuda --inference_device cuda --trainer.gradient_accumulation_steps 128 --trainer.rollout_batch_size 8 --inference_lllm_max_seq_len 700 --run-name 4090 (on single 4090)
 Learning rate ablation:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --run-name lr_2e-5
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.000005 --run-name lr_5e-6
