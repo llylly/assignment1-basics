@@ -204,7 +204,7 @@ def grpo_train_step(
 Usage:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 (on RTX 6000 Ada)
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --trainer.gradient_accumulation_steps 32 (on H100)
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --inference_backend lllm --device cuda --inference_device cuda --trainer.gradient_accumulation_steps 64 --trainer.rollout_batch_size 8 (on single 4090)
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --inference_backend lllm --device cuda --inference_device cuda --trainer.gradient_accumulation_steps 128 --trainer.rollout_batch_size 8 --run-name 4090 (on single 4090)
 Learning rate ablation:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --run-name lr_2e-5
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.000005 --run-name lr_5e-6
@@ -424,6 +424,7 @@ if __name__ == '__main__':
                     rollout_completions.extend(
                         generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, include_stop_str_in_output=True, verbose=False)
                     )
+                torch.cuda.synchronize()
             else:
                 raise NotImplementedError
             rollout_responses = [c.text if c.text else ' ' for c in rollout_completions]
@@ -450,7 +451,7 @@ if __name__ == '__main__':
                 # no need to re-init
                 vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)
             elif config.inference_backend == 'lllm':
-                pass
+                torch.cuda.synchronize()
             else:
                 raise NotImplementedError
 
@@ -461,7 +462,7 @@ if __name__ == '__main__':
                 if config.inference_backend == 'vllm':
                     overall_stats, val_details = task_set_grader(eval_config, True, False, False, None, None)
                 elif config.inference_backend == 'lllm':
-                    overall_stats, val_details = task_set_grader(eval_config, True, False, False, model, tokenizer)
+                    overall_stats, val_details = task_set_grader(eval_config, True, False, True, model, tokenizer)
                 else:
                     raise NotImplementedError
                 print(overall_stats)
