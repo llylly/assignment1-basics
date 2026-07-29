@@ -3,7 +3,7 @@
   "base_model_format": "olmo_hf",
   "task_name": "gsm8k",
   "prompt_template": "alignment/prompts/r1_zero.prompt",
-  "save_path": "models/rl/olmo2_1B_gsm8k/base_rl_r1zero",
+  "save_path": "models/rl/olmo2_1B_gsm8k/base_rl_r1zero_rft",
   "train_data": "data/gsm8k/train.jsonl",
   "val_data": "data/gsm8k/test.jsonl",
   "trainer": {
@@ -14,6 +14,10 @@
     "gradient_accumulation_steps": 64,
     "rollout_batch_size": 256,
     "rollout_temperature": 1.0,
-    "rollout_max_new_tokens": 512
+    "rollout_max_new_tokens": 512,
+    "baseline": "none",
+    "advantage_normalizer": "none",
+    "loss_normalization": "constant",
+    "normalization_constant": 131072   # batch_size * max_new_tokens
   }
 }

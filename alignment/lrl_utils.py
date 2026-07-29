@@ -114,6 +114,8 @@ def compute_group_normalized_rewards(
         denominator = group_std + advantage_eps
     elif advantage_normalizer == 'mean':
         denominator = group_mean + advantage_eps
+    elif advantage_normalizer == 'none':
+        denominator = 1.
     else:
         raise NotImplementedError
     advantages = new_group_viewed / denominator
@@ -159,8 +161,9 @@ def aggregate_loss_across_microbatch_sequence(
     ) -> torch.Tensor:
     if loss_normalization == 'sequence':
         return ((mask * per_token_policy_gradient_loss).sum(dim=-1) / mask.sum(dim=-1)).mean()
-    else:
+    elif loss_normalization == 'constant':
         # "constant"
         assert normalization_constant is not None
         return (mask * per_token_policy_gradient_loss).sum() / normalization_constant
-
+    else:
+        raise NotImplementedError

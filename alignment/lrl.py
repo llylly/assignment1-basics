@@ -158,22 +158,34 @@ def grpo_train_step(
     tokenized = tokenize_prompt_and_output(repeated_prompts, rollout_responses, tokenizer, response_token_ids)
     input_ids, labels, response_masks = tokenized['input_ids'].to(model.device), tokenized['labels'].to(model.device), tokenized['response_mask'].to(model.device)
 
+    # stage 4pre: prune zero advantaged sequences
+    a_prune_eps = 0.00001
+    actual_macro_batch_size = ((advantages >= a_prune_eps).sum() + (advantages <= -a_prune_eps).sum()).item()
+
     # stage 4: within the microbatch, compute logits and update the model
     batch_loss = torch.tensor(0., dtype=model.dtype, device=model.device)
     mean_token_entropy = torch.tensor(0., dtype=model.dtype, device=model.device)
     for i in tqdm(range(0, macro_batch_size, micro_batch_size)):
-        actual_batch_size = min(micro_batch_size, macro_batch_size - i)
-        model_ret = get_response_log_probs(model, input_ids[i: i+micro_batch_size], labels[i: i+micro_batch_size], return_token_entropy=True)
+        seq_keep_mask = (advantages[i: i+micro_batch_size] >= a_prune_eps) | (advantages[i: i+micro_batch_size] <= -a_prune_eps)
+        actual_batch_size = seq_keep_mask.sum()
+        if actual_batch_size == 0: # all zero
+            continue
+        model_ret = get_response_log_probs(model, input_ids[i: i+micro_batch_size][seq_keep_mask], labels[i: i+micro_batch_size][seq_keep_mask], return_token_entropy=True)
         log_probs, token_entropy = model_ret['log_probs'], model_ret['token_entropy'] # [B,L] and [B]
-        token_level_loss, token_level_loss_metadata = compute_policy_gradient_loss(advantages[i: i+micro_batch_size], log_probs, importance_reweighting_method, old_log_probs, cliprange, response_masks[i: i+micro_batch_size])
-        microbatch_loss = aggregate_loss_across_microbatch_sequence(token_level_loss, response_masks[i: i+micro_batch_size], loss_normalization, normalization_constant)
+        token_level_loss, token_level_loss_metadata = compute_policy_gradient_loss(advantages[i: i+micro_batch_size][seq_keep_mask], log_probs, importance_reweighting_method, old_log_probs[i: i+micro_batch_size][seq_keep_mask] if old_log_probs else None, cliprange, response_masks[i: i+micro_batch_size][seq_keep_mask])
+        microbatch_loss = aggregate_loss_across_microbatch_sequence(token_level_loss, response_masks[i: i+micro_batch_size][seq_keep_mask], loss_normalization, normalization_constant)
         # calibration
-        microbatch_loss = microbatch_loss * actual_batch_size / macro_batch_size
+        if loss_normalization == 'sequence':
+            microbatch_loss = microbatch_loss * actual_batch_size / actual_macro_batch_size
+        elif loss_normalization == 'constant':
+            pass
+        else:
+            raise NotImplementedError
         microbatch_loss.backward()
 
         with torch.no_grad():
             batch_loss = batch_loss + microbatch_loss
-            mean_token_entropy += ((token_entropy * response_masks[i: i+micro_batch_size]).sum(dim=-1) / response_masks[i: i+micro_batch_size].sum(dim=-1)).sum() / macro_batch_size
+            mean_token_entropy += ((token_entropy * response_masks[i: i+micro_batch_size][seq_keep_mask]).sum(dim=-1) / response_masks[i: i+micro_batch_size][seq_keep_mask].sum(dim=-1)).sum() / actual_macro_batch_size
 
     # stage 5: grad norm clipping & update weights for the mini-batch
     grad_norm = LGradientClipping(model.parameters(), max_grad_norm)
@@ -202,15 +214,15 @@ def grpo_train_step(
 
 """
 Usage:
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 (on RTX 6000 Ada)
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --trainer.gradient_accumulation_steps 32 (on H100)
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --inference_backend lllm --device cuda --inference_device cuda --trainer.gradient_accumulation_steps 64 --trainer.rollout_batch_size 8 (on single 4090)
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 (on RTX 6000 Ada)
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --trainer.gradient_accumulation_steps 32 (on H100)
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --inference_backend lllm --device cuda --inference_device cuda --trainer.gradient_accumulation_steps 64 --trainer.rollout_batch_size 8 (on single 4090)
 Learning rate ablation:
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --run-name lr_2e-5
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.000005 --run-name lr_5e-6
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --run-name lr_2e-5
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.000005 --run-name lr_5e-6
 Prompt ablation:
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/question_only.prompt" --run-name prpt_qonly
-uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/r1_zero_three_shot_gsm8k.prompt" --run-name prpt_3shot
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/question_only.prompt" --run-name prpt_qonly
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/r1_zero_three_shot_gsm8k.prompt" --run-name prpt_3shot
 """
 
 if __name__ == '__main__':
