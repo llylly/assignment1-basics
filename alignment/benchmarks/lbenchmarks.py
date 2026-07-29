@@ -28,7 +28,7 @@ def get_task_grader(task_name: str, **kwargs) -> Callable[[str, str], dict]: # r
     else:
         raise NotImplementedError
 
-def get_testable_task_setgrader(task_name: str) -> Tuple[object, Callable[[object, bool, bool, bool], [dict, list]]]:
+def get_testable_task_setgrader(task_name: str) -> Tuple[object, Callable[[object, bool, bool, bool, object | None, object | None], Tuple[dict, list]]]:
     assert task_name in testable_tasks
     if task_name == 'gsm8k':
         from alignment.benchmarks import lgsm8k_eval

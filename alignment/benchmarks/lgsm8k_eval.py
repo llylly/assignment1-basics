@@ -12,13 +12,12 @@ import multiprocessing
 import tyro
 import wandb
 from alignment import vllm_utils
-import basics.lmodeling_olmo as lmodeling_olmo
 from basics.linference import generate
 from alignment import drgrpo_grader
 
 @dataclass
 class GSM8KEvalConfig:
-    backend: Literal['native', 'vllm'] = 'native' # 'vllm' / 'native'
+    backend: Literal['lllm', 'vllm'] = 'lllm' # 'vllm' / 'lllm'
     dtype: Literal['bfloat16', 'float32'] = 'bfloat16' # or 'float32'
     device: str = 'cuda'
     prompt_type: Literal['r1_zero', 'question_only', 'r1_zero_three_shot_gsm8k'] = 'r1_zero' # or 'question_only'
@@ -34,6 +33,7 @@ class GSM8KEvalConfig:
     vllm_server_no_host: bool = False # in this case, assume the host is already there
     vllm_ip: str = '127.0.0.1'
     vllm_port: int = 8080
+    lllm_server_no_host: bool = False # in this case, need to supply model and tokenizer to the function
 
 def gsm8k_question_formulator(sample: dict, prompt_template: str) -> str:
     return prompt_template.format(question=sample['question'])
@@ -47,7 +47,7 @@ def gsm8k_question_grader(response: str, ground_truth: str, prompt_type: Literal
         grade_fn = drgrpo_grader.question_only_reward_fn
     return grade_fn(response, ground_truth, fast=False)
 
-def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=True, verbose=True):
+def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=True, verbose=True, model=None, tokenizer=None):
 
     nowtime = datetime.now().strftime('_%Y%m%d_%H%M%S')
     run_name = f'gsm8k_test_{eval_config.run_suffix}_{eval_config.backend}_prompt_{eval_config.prompt_type}_temp_{eval_config.temperature}_n_{eval_config.n}_max_new_tokens_{eval_config.max_new_tokens}_{eval_config.model_dir.replace("/", "-")}_{eval_config.dtype}_bs_{eval_config.batch_size}_{nowtime}'
@@ -74,8 +74,14 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
         if not eval_config.vllm_server_no_host:
             serv_proc = vllm_utils.start_server(eval_config.model_dir, eval_config.vllm_ip, eval_config.vllm_port, eval_config.dtype, int(eval_config.device[5:]) if len(eval_config.device) > 4 else 0, None, "auto", 'INFO')
             vllm_utils.wait_for_server(f'http://{eval_config.vllm_ip}:{eval_config.vllm_port}', serv_proc, 300)
-    elif eval_config.backend == 'native':
-        model, tokenizer = lmodeling_olmo.from_pretrained(eval_config.model_dir, eval_config.dtype, eval_config.device, flash_attn=False) # for gsm8k, I don't see much benefit of using flash attn
+    elif eval_config.backend == 'lllm':
+        from basics.lmodeling import LTransformerLM
+        from basics.ltokenizer import LTokenizer
+        if eval_config.lllm_server_no_host:
+            assert isinstance(model, LTransformerLM) and isinstance(tokenizer, LTokenizer)
+        else:
+            import basics.lmodeling_olmo as lmodeling_olmo
+            model, tokenizer = lmodeling_olmo.from_pretrained(eval_config.model_dir, eval_config.dtype, eval_config.device, flash_attn=False) # for gsm8k, I don't see much benefit of using flash attn
 
 
     all_finished = []
@@ -99,8 +105,8 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
                     'stop': ['</answer>'],
                     'include_stop_str_in_output': True,
                 }, None)
-            elif eval_config.backend == 'native':
-                ret = generate(model, prompts, tokenizer, eval_config.max_new_tokens, eval_config.temperature, device=eval_config.device, extra_stop_tokens=['</answer>'], include_stop_str_in_output=True, verbose=False)
+            elif eval_config.backend == 'lllm':
+                ret = generate(model, prompts, tokenizer, eval_config.max_new_tokens, eval_config.temperature, extra_stop_tokens=['</answer>'], include_stop_str_in_output=True, verbose=False)
             else:
                 raise NotImplementedError
             continuations.extend(ret)
@@ -178,11 +184,11 @@ Example commands:
 uv run alignment/benchmarks/lgsm8k_eval.py --backend vllm --prompt_type r1_zero
 uv run alignment/benchmarks/lgsm8k_eval.py --backend vllm --prompt_type r1_zero_three_shot_gsm8k
 uv run alignment/benchmarks/lgsm8k_eval.py --backend vllm --prompt_type question_only
-uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type r1_zero
-uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type r1_zero_three_shot_gsm8k
-uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type question_only
+uv run alignment/benchmarks/lgsm8k_eval.py --backend lllm --prompt_type r1_zero
+uv run alignment/benchmarks/lgsm8k_eval.py --backend lllm --prompt_type r1_zero_three_shot_gsm8k
+uv run alignment/benchmarks/lgsm8k_eval.py --backend lllm --prompt_type question_only
 uv run alignment/benchmarks/lgsm8k_eval.py --backend vllm --prompt_type r1_zero --run-suffix rleval --model-dir models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/hf_ckpts/step_0000199 --batch-size 256
-uv run alignment/benchmarks/lgsm8k_eval.py --backend native --prompt_type r1_zero --run-suffix rleval --model-dir models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/hf_ckpts/step_0000199 --batch-size 192 --device cuda:1
+uv run alignment/benchmarks/lgsm8k_eval.py --backend lllm --prompt_type r1_zero --run-suffix rleval --model-dir models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/hf_ckpts/step_0000199 --batch-size 192 --device cuda:1
 """
 if __name__ == '__main__':
     config = tyro.cli(GSM8KEvalConfig)

@@ -26,6 +26,7 @@ from basics.ltrain import LGradientClipping, save_checkpoint
 from basics.lopt import LSGD, LAdamW
 from basics.ltrain_utils import dict_to_dataclass, load_checkpoint, get_git_hash
 from basics.lmodeling import LTransformerLM
+from basics.linference import generate
 from alignment.benchmarks.lbenchmarks import *
 from alignment import vllm_utils
 from alignment.lrl_utils import *
@@ -203,6 +204,7 @@ def grpo_train_step(
 Usage:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 (on RTX 6000 Ada)
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --trainer.gradient_accumulation_steps 32 (on H100)
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --inference_backend lllm --device cuda --inference_device cuda --trainer.gradient_accumulation_steps 64 --trainer.rollout_batch_size 8 (on single 4090)
 Learning rate ablation:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --run-name lr_2e-5
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.000005 --run-name lr_5e-6
@@ -228,10 +230,12 @@ if __name__ == '__main__':
         assert config.inference_vllm_dummy_model_path is not None, "if base_model_format == 'lllm', we need a dummy hf model path to launch vllm inference engine"
         assert config.tokenizer_path is not None, "if base_model_format == 'lllm', need to specify tokenizer_path"
         assert config.model_config is not None, "if base_model_format == 'lllm', need to specify model_config"
-    assert config.inference_backend == 'vllm', 'backend engine from our own lllm is not supported yet until I know how to dynamically update engine weights'
-    assert config.inference_device.startswith('cuda:'), 'VLLM inference device should be of the format cuda:X'
+    # assert config.inference_backend == 'vllm', 'backend engine from our own lllm is not supported yet until I know how to dynamically update engine weights'
     if config.inference_backend == 'vllm':
+        assert config.inference_device.startswith('cuda:'), 'VLLM inference device should be of the format cuda:X'
         assert config.device != config.inference_device, 'If using vllm, should be on different devices'
+    if config.inference_backend == 'lllm':
+        assert config.device == config.inference_device, 'If using lllm, should be on the same device'
     if config.trainer.rollout_batch_size is not None:
         assert config.trainer.batch_size % config.trainer.rollout_batch_size == 0
 
@@ -328,6 +332,8 @@ if __name__ == '__main__':
 
         weight_sync_group = vllm_utils.init_weight_sync(vllm_base_url, config.device, rank_offset)
         vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)
+    elif config.inference_backend == 'lllm':
+        pass
     else:
         raise NotImplementedError
 
@@ -340,22 +346,31 @@ if __name__ == '__main__':
         assert guessed_prompt_type in ['r1_zero', 'question_only', 'r1_zero_three_shot_gsm8k']
         task_grader = get_task_grader(config.task_name, prompt_type=guessed_prompt_type)
         from alignment.benchmarks.lgsm8k_eval import GSM8KEvalConfig
-        eval_config = GSM8KEvalConfig(
-            backend=config.inference_backend,
-            dtype=config.dtype,
-            prompt_type=guessed_prompt_type,
-            max_new_tokens=config.trainer.rollout_max_new_tokens,
-            temperature=config.trainer.rollout_temperature,
-            n=config.trainer.group_size,
-            batch_size=config.trainer.rollout_batch_size,
-            model_dir=init_vllm_model_path,
-            data_file=config.val_data,
-            run_suffix='rl_eval_stepX',
-            save_dir='', # will be overwritten
-            vllm_server_no_host=True,
-            vllm_ip=config.inference_vllm_ip,
-            vllm_port=config.inference_vllm_port
-        )
+        eval_config = {
+            'backend': config.inference_backend,
+            'dtype': config.dtype,
+            'device': config.inference_device,
+            'prompt_type': guessed_prompt_type,
+            'max_new_tokens': config.trainer.rollout_max_new_tokens,
+            'temperature': config.trainer.rollout_temperature,
+            'n': config.trainer.group_size,
+            'batch_size': config.trainer.rollout_batch_size,
+            'data_file': config.val_data,
+            'run_suffix': 'rl_eval_stepX',
+            'save_dir': '', # will be overwritten
+        }
+        if config.inference_backend == 'vllm':
+            eval_config |= {
+                'model_dir': init_vllm_model_path,
+                'vllm_server_no_host': True,
+                'vllm_ip': config.inference_vllm_ip,
+                'vllm_port': config.inference_vllm_port
+            }
+        elif config.inference_backend == 'lllm':
+            eval_config |= {
+                'lllm_server_no_host': True
+            }
+        eval_config = GSM8KEvalConfig(**eval_config)
     else:
         raise NotImplementedError
 
@@ -402,6 +417,13 @@ if __name__ == '__main__':
             print('Inferencing...')
             if config.inference_backend == 'vllm':
                 rollout_completions = vllm_utils.generate_completions(vllm_base_url, init_vllm_model_path, prompts, vllm_sampling_params, config.trainer.rollout_batch_size)
+            elif config.inference_backend == 'lllm':
+                # self batch
+                rollout_completions = []
+                for i in tqdm(range(0, len(prompts), config.trainer.rollout_batch_size)):
+                    rollout_completions.extend(
+                        generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, include_stop_str_in_output=True, verbose=False)
+                    )
             else:
                 raise NotImplementedError
             rollout_responses = [c.text if c.text else ' ' for c in rollout_completions]
@@ -426,8 +448,9 @@ if __name__ == '__main__':
             print('Weight sync...')
             if config.inference_backend == 'vllm':
                 # no need to re-init
-                # weight_sync_group = vllm_utils.init_weight_sync(vllm_base_url, config.device, rank_offset)
                 vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)
+            elif config.inference_backend == 'lllm':
+                pass
             else:
                 raise NotImplementedError
 
@@ -435,7 +458,12 @@ if __name__ == '__main__':
                 print('Validation...')
                 eval_config.run_suffix = f'rl_eval_step{now_step}'
                 eval_config.save_dir = str(save_path / 'val' / f'step_{now_step:07}')
-                overall_stats, val_details = task_set_grader(eval_config, True, False, False)
+                if config.inference_backend == 'vllm':
+                    overall_stats, val_details = task_set_grader(eval_config, True, False, False, None, None)
+                elif config.inference_backend == 'lllm':
+                    overall_stats, val_details = task_set_grader(eval_config, True, False, False, model, tokenizer)
+                else:
+                    raise NotImplementedError
                 print(overall_stats)
                 val_metadata = {}
                 if config.task_name == 'gsm8k':

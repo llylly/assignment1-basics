@@ -69,14 +69,14 @@ def sampler(y: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0): # y:
         return y_sampled
 
 def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], tokenizer: LTokenizer,
-             max_new_tokens: int = 256, temperature: float = 1.0, top_p: float = 1.0, device: str = 'cuda', 
+             max_new_tokens: int = 256, temperature: float = 1.0, top_p: float = 1.0, 
              pad_token_id = -100, extra_stop_tokens: list[str] | None = None, include_stop_str_in_output=False, verbose=True) -> List[LCompletion]:
     
     # tokenize and left padding
     token_list = [tokenizer.encode(pp) for pp in prompts]
     max_token_len = max([len(item) for item in token_list])
     padded_token_list = [[pad_token_id] * (max_token_len - len(item)) + item for item in token_list]
-    x = torch.tensor(padded_token_list, dtype=torch.long, device=device)
+    x = torch.tensor(padded_token_list, dtype=torch.long, device=model.device)
     token_positions = (torch.cumsum(x != pad_token_id, dim=1) - 1).clamp(min=0).to(x.device)
     padded_tokens = (x == pad_token_id)
 
@@ -86,7 +86,7 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
 
     input_len = x.shape[-1]
     tot_seq = x.shape[0]
-    not_finished = torch.ones((tot_seq,), dtype=torch.bool, device=device)
+    not_finished = torch.ones((tot_seq,), dtype=torch.bool, device=model.device)
     kv_cache: dict | None = None
 
     if extra_stop_tokens is None:
@@ -94,7 +94,7 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
     stop_token_ids = [tokenizer.encode(item)[0] for item in extra_stop_tokens if len(tokenizer.encode(item)) == 1]
     eof = tokenizer.encode(tokenizer.eos_token)[0] if tokenizer.eos_token else None # '<|endoftext|>'
     if eof:
-        stop_token_ids = torch.tensor([eof] + stop_token_ids, device=device).view(1, -1)
+        stop_token_ids = torch.tensor([eof] + stop_token_ids, device=model.device).view(1, -1)
         extra_stop_tokens.append(tokenizer.eos_token)
     
     with torch.no_grad():
