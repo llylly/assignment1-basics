@@ -427,7 +427,7 @@ if __name__ == '__main__':
             else:
                 raise NotImplementedError
             rollout_responses = [c.text if c.text else ' ' for c in rollout_completions]
-            response_token_ids = [c.token_ids if len(c.token_ids) == 0 else [0] for c in rollout_completions]
+            response_token_ids = [c.token_ids if c.token_ids else [0] for c in rollout_completions]
             # add thing to prevent empty response which results in div0 error.
 
             rollout_metadata = {
