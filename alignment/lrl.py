@@ -100,8 +100,9 @@ class RLConfig:
     inference_vllm_port: int = 8080
     inference_vllm_seed: int | None = None #42
     inference_vllm_dummy_model_path: str | None = None
+    # if base_model_format == 'vllm', we need a dummy hf model path to launch vllm inference engine
     inference_vllm_gpu_memory_utilization: float = 0.8
-    # if base_model_format == 'lllm', we need a dummy hf model path to launch vllm inference engine
+    inference_lllm_max_seq_len: int | None = None # We can additionally constrain max total ctx length for lllm backend
     run_name: str | None = ''
     """run_name is appended to both save_path and wandb"""
     val_step: int = 20
@@ -380,7 +381,8 @@ if __name__ == '__main__':
             }
         elif config.inference_backend == 'lllm':
             eval_config |= {
-                'lllm_server_no_host': True
+                'lllm_server_no_host': True,
+                'lllm_max_seq_len': config.inference_lllm_max_seq_len
             }
         eval_config = GSM8KEvalConfig(**eval_config)
     else:
@@ -434,7 +436,7 @@ if __name__ == '__main__':
                 rollout_completions = []
                 for i in tqdm(range(0, len(prompts), config.trainer.rollout_batch_size)):
                     rollout_completions.extend(
-                        generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, include_stop_str_in_output=True, verbose=False)
+                        generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, max_seq_len=config.inference_lllm_max_seq_len, include_stop_str_in_output=True, verbose=False)
                     )
                 torch.cuda.synchronize()
             else:

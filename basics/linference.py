@@ -70,7 +70,8 @@ def sampler(y: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0): # y:
 
 def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], tokenizer: LTokenizer,
              max_new_tokens: int = 256, temperature: float = 1.0, top_p: float = 1.0, 
-             pad_token_id = -100, extra_stop_tokens: list[str] | None = None, include_stop_str_in_output=False, verbose=True) -> List[LCompletion]:
+             pad_token_id = -100, extra_stop_tokens: list[str] | None = None, include_stop_str_in_output=False, max_seq_len: int | None = None,
+             verbose=True) -> List[LCompletion]:
     
     # tokenize and left padding
     token_list = [tokenizer.encode(pp) for pp in prompts]
@@ -97,11 +98,12 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
         stop_token_ids = torch.tensor([eof] + stop_token_ids, device=model.device).view(1, -1)
         extra_stop_tokens.append(tokenizer.eos_token)
     
+    if max_seq_len is None:
+        max_seq_len = model.max_seq_len
     with torch.no_grad():
         while True:
-            max_seq_len: int = model.max_seq_len if isinstance(model, LTransformerLM) else model.max_seq_len
             if now_new_tokens >= max_new_tokens or input_len + now_new_tokens > max_seq_len:
-                if verbose: print(f'!!! exceeds length: now new tokens = {now_new_tokens}, now ctx len = {x.shape[-1]}')
+                if verbose: print(f'Inference exceeds length: now new tokens = {now_new_tokens}, now ctx len = {x.shape[-1]}')
                 break
             y, kv_cache = model.batch_generate(x, kv_cache=kv_cache, pad_token_id=pad_token_id, token_positions=token_positions if kv_cache else None, kv_cache_sliced_to=input_len + now_new_tokens - 1, padded_tokens=padded_tokens)
             last_y = y[:, -1]
@@ -140,7 +142,9 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
 
             if not torch.any(not_finished):
                 break
-    
+
+    if kv_cache:
+        del kv_cache
     stop_reasons = ['length' if not_finished[i] else 'stop' for i in range(len(prompts))]
     ret = []
 

@@ -34,6 +34,7 @@ class GSM8KEvalConfig:
     vllm_ip: str = '127.0.0.1'
     vllm_port: int = 8080
     lllm_server_no_host: bool = False # in this case, need to supply model and tokenizer to the function
+    lllm_max_seq_len: int | None = None # We can additionally constrain max total ctx length for lllm backend
 
 def gsm8k_question_formulator(sample: dict, prompt_template: str) -> str:
     return prompt_template.format(question=sample['question'])
@@ -106,7 +107,7 @@ def gsm8k_seteval(eval_config: GSM8KEvalConfig, dump_file=True, launch_wandb=Tru
                     'include_stop_str_in_output': True,
                 }, None)
             elif eval_config.backend == 'lllm':
-                ret = generate(model, prompts, tokenizer, eval_config.max_new_tokens, eval_config.temperature, extra_stop_tokens=['</answer>'], include_stop_str_in_output=True, verbose=False)
+                ret = generate(model, prompts, tokenizer, eval_config.max_new_tokens, eval_config.temperature, extra_stop_tokens=['</answer>'], include_stop_str_in_output=True, max_seq_len=eval_config.lllm_max_seq_len, verbose=False)
             else:
                 raise NotImplementedError
             continuations.extend(ret)
