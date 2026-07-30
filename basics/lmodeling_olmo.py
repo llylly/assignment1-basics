@@ -215,11 +215,13 @@ Usage example:
 uv run python basics/lmodeling_olmo.py
 uv run python basics/lmodeling_olmo.py --model-path models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/hf_ckpts/step_0000150
 uv run python basics/lmodeling_olmo.py --intent convert --model-path models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/ckpts/step_0000199.pth --base-model-path models/OLMo-2-0425-1B --output-path models/rl/olmo2_1B_gsm8k/base_rl_r1zero_20260727_141916/hf_ckpts/step_0000199
+uv run python basics/lmodeling_olmo.py --model-path models/rl/olmo2_1B_gsm8k/base_rl_r1zero_4090_20260729_002500/h
+f_ckpts/step_0000199
 """
 if __name__ == '__main__':
     usage = tyro.cli(Usage)
     if usage.intent == 'inference':
-        model, tokenizer = from_pretrained(usage.model_path, 'bfloat16', device=device, flash_attn=True)
+        model, tokenizer = from_pretrained(usage.model_path, 'bfloat16', device=usage.device, flash_attn=True)
         from basics.linference import generate
         while True:
             prompt = input('\n> ')
