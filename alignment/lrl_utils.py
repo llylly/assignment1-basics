@@ -183,8 +183,7 @@ def compute_valloss(batch_size: int, model: LTransformerLM, tokenizer: LTokenize
             tokenized = tokenize_prompt_and_output(prompts, responses, tokenizer)
 
             input_ids, labels, response_masks = tokenized['input_ids'].to(model.device), tokenized['labels'].to(model.device), tokenized['response_mask'].to(model.device)
-
-            model_ret = get_response_log_probs(model, input_ids[i: i+batch_size], labels[i: i+batch_size], return_token_entropy=True)
+            model_ret = get_response_log_probs(model, input_ids, labels, return_token_entropy=True)
             log_probs, token_entropy = model_ret['log_probs'], model_ret['token_entropy'] # [B,L] and [B]
             token_level_loss = - log_probs * response_masks
 

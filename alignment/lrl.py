@@ -231,6 +231,10 @@ uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_g
 Prompt ablation:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/question_only.prompt" --run-name prpt_qonly
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/r1_zero_three_shot_gsm8k.prompt" --run-name prpt_3shot
+uv run alignment/lrl.py --config_path configs/sft_config_olmo_base_gsm8k.yaml --device cuda:0
+
+sft baseline:
+PYTORCH_ALLOC_CONF=expandable_segments:True uv run alignment/lrl.py --config_path configs/sft_config_olmo_base_gsm8k.yaml --device cuda:0
 """
 
 if __name__ == '__main__':
@@ -262,8 +266,8 @@ if __name__ == '__main__':
         assert config.trainer.baseline == 'none'
         assert config.trainer.advantage_normalizer == 'none'
         assert config.trainer.loss_normalization == 'sequence'
-    if config.trainer.rollout_batch_size is not None:
-        assert config.trainer.batch_size % config.trainer.rollout_batch_size == 0
+    # if config.trainer.rollout_batch_size is not None:
+    #     assert config.trainer.batch_size % config.trainer.rollout_batch_size == 0
 
     nowtime = datetime.now().strftime('_%Y%m%d_%H%M%S')
     original_save_path = config.save_path
@@ -412,6 +416,7 @@ if __name__ == '__main__':
         elif config.inference_backend == 'lllm' or config.inference_backend == 'sft':
             # a side effect: if it is sft, since group size is 1, we only measure pass@1
             eval_config |= {
+                'backend': 'lllm',
                 'lllm_server_no_host': True,
                 'lllm_max_seq_len': config.inference_lllm_max_seq_len
             }
@@ -473,13 +478,13 @@ if __name__ == '__main__':
             else:
                 raise NotImplementedError
             rollout_responses = [c.text if c.text else ' ' for c in rollout_completions]
-            response_token_ids = [c.token_ids if c.token_ids else [0] for c in rollout_completions]
+            response_token_ids = [c.token_ids if c.token_ids else [0] for c in rollout_completions] if len(rollout_completions) > 0 and rollout_completions[0].token_ids else None
             # add thing to prevent empty response which results in div0 error.
 
-            rollout_metadata = {
-                'length/mean': sum([len(c.token_ids) for c in rollout_completions]) / len(rollout_completions),
-                'length/truncate_ratio': sum([c.finish_reason != 'stop' for c in rollout_completions]) / len(rollout_completions)
-            }
+            rollout_metadata = ({
+                'length/mean': sum([len(c.token_ids) for c in rollout_completions]) / len(rollout_completions) } if rollout_completions and rollout_completions[0].token_ids else { }) | {
+                    'length/truncate_ratio': sum([c.finish_reason != 'stop' for c in rollout_completions]) / len(rollout_completions)
+                }
 
             print('Training...')
             # fully online RL
@@ -488,7 +493,7 @@ if __name__ == '__main__':
             print('Logging...')
             train_metadata = metadata | rollout_metadata | {'loss': loss.item(), 'time': time.time() - stime, 'lr': now_lr, 'epoch': (now_step + 1) * n_samp_per_batch / len(train_datasets)}
             train_metadata = {('train/' + k): v for k, v in train_metadata.items()}
-            print('\n'.join([k + '=' + (f'{train_metadata[k].item()}' if isinstance(train_metadata[k], torch.Tensor) else f'{train_metadata[k]}') for k in ['train/loss', 'train/grad_norm', 'train/token_entropy', 'train/length/mean', 'train/reward/mean', 'train/min_response_len', 'train/max_response_len']]))
+            print('\n'.join([k + '=' + (f'{train_metadata[k].item()}' if isinstance(train_metadata[k], torch.Tensor) else f'{train_metadata[k]}') for k in ['train/loss', 'train/grad_norm', 'train/token_entropy', 'train/length/mean', 'train/reward/mean', 'train/min_response_len', 'train/max_response_len'] if k in train_metadata]))
             wandb.log(train_metadata, step=now_step)
 
             print('Weight sync...')
@@ -496,6 +501,8 @@ if __name__ == '__main__':
                 # no need to re-init
                 vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)
             elif config.inference_backend == 'lllm':
+                torch.cuda.synchronize()
+            elif config.inference_backend == 'sft':
                 torch.cuda.synchronize()
             else:
                 raise NotImplementedError
@@ -527,7 +534,8 @@ if __name__ == '__main__':
                 if config.inference_backend == 'sft':
                     new_overall_stats, new_val_details = compute_valloss(eval_config.batch_size, model, tokenizer, val_datasets, config.inference_sft_field_name, question_formulator)
                     val_metadata |= {f'val/{kk}': vv for kk, vv in new_val_details.items()}
-
+                    print(new_val_details)
+                
                 wandb.log(val_metadata, step=now_step)
 
             if now_step % config.rollout_save_step == 0 or now_step == config.trainer.tot_steps - 1:
