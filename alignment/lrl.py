@@ -525,7 +525,7 @@ if __name__ == '__main__':
                     if config.base_model_format == 'olmo_hf':
                         from basics.lmodeling_olmo import lllm_ckpt_to_hf_ckpt
                         lllm_ckpt_to_hf_ckpt(str(ckpt_save_path), config.base_model_ckpt, str(save_path / 'hf_ckpts' / f'step_{now_step:07}'))
-                        print(f'Huggingface format checkpoint saved to {ckpt_save_path}')
+                        print(f'Huggingface format checkpoint saved to', str(save_path / 'hf_ckpts' / f'step_{now_step:07}'))
 
     finally:
         # sanitize
