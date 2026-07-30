@@ -44,7 +44,7 @@ class MainConfig:
 class LCompletion:
     prompt: str | None
     text: str
-    token_ids: list[int]
+    token_ids: list[int] | None
     finish_reason: str | None # "stop" / "length" / "content_filter"
 
 def sampler(y: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0): # y: [B, V] # output [B, 1]

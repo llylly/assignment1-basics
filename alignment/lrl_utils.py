@@ -1,9 +1,11 @@
 from typing import Callable, Tuple, Literal, Iterable
 from numpy import std
+from tqdm import tqdm
 import torch
 from transformers import PreTrainedTokenizerBase, PreTrainedModel
 from basics.ltokenizer import LTokenizer
 from basics.lmodeling import LTransformerLM
+from alignment.benchmarks.lbenchmarks import *
 
 def tokenize_prompt_and_output(
         prompt_strs: list[str],
@@ -167,3 +169,41 @@ def aggregate_loss_across_microbatch_sequence(
         return (mask * per_token_policy_gradient_loss).sum() / normalization_constant
     else:
         raise NotImplementedError
+
+def compute_valloss(batch_size: int, model: LTransformerLM, tokenizer: LTokenizer, val_datasets: list[dict], response_field_name: str, question_formulator: Callable[[dict], str]) -> tuple[dict, dict]:
+
+    tot_loss_sum = None
+    tot_mean_token_entropy = None
+
+    with torch.no_grad():
+        for i in tqdm(range(0, len(val_datasets), batch_size)):
+
+            prompts = [question_formulator(item) for item in val_datasets[i: i+batch_size]]
+            responses = [item[response_field_name] + (tokenizer.eos_token if tokenizer.eos_token is not None else '') for item in val_datasets[i: i+batch_size]]
+            tokenized = tokenize_prompt_and_output(prompts, responses, tokenizer)
+
+            input_ids, labels, response_masks = tokenized['input_ids'].to(model.device), tokenized['labels'].to(model.device), tokenized['response_mask'].to(model.device)
+
+            model_ret = get_response_log_probs(model, input_ids[i: i+batch_size], labels[i: i+batch_size], return_token_entropy=True)
+            log_probs, token_entropy = model_ret['log_probs'], model_ret['token_entropy'] # [B,L] and [B]
+            token_level_loss = - log_probs * response_masks
+
+            batch_loss = ((response_masks * token_level_loss).sum(dim=-1) / response_masks.sum(dim=-1)).sum()
+
+            batch_mean_token_entropy = ((token_entropy * response_masks).sum(dim=-1) / response_masks.sum(dim=-1)).sum()
+
+            if tot_loss_sum is None:
+                tot_loss_sum = batch_loss
+            else:
+                tot_loss_sum += batch_loss
+            if tot_mean_token_entropy is None:
+                tot_mean_token_entropy = batch_mean_token_entropy
+            else:
+                tot_mean_token_entropy += batch_mean_token_entropy
+
+    assert tot_loss_sum is not None and tot_mean_token_entropy is not None
+    loss = tot_loss_sum / len(val_datasets)
+    mean_token_entropy = tot_mean_token_entropy / len(val_datasets)
+    return {'loss': loss.item()}, {'loss': loss.item(), 'token_entropy': mean_token_entropy.item()}
+
+

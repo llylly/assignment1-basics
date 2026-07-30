@@ -26,7 +26,7 @@ from basics.ltrain import LGradientClipping, save_checkpoint
 from basics.lopt import LSGD, LAdamW
 from basics.ltrain_utils import dict_to_dataclass, load_checkpoint, get_git_hash
 from basics.lmodeling import LTransformerLM
-from basics.linference import generate
+from basics.linference import generate, LCompletion
 from alignment.benchmarks.lbenchmarks import *
 from alignment import vllm_utils
 from alignment.lrl_utils import *
@@ -93,7 +93,7 @@ class RLConfig:
     # """if base_model_format == 'lllm', need to specify tokenizer_path"""
     model_config: str | None = None
     # """if base_model_format == 'lllm', need to specify model_config"""
-    inference_backend: Literal['vllm', 'lllm'] = 'vllm'
+    inference_backend: Literal['vllm', 'lllm', 'sft'] = 'vllm'
     inference_device: str='cuda:1'
     inference_vllm_server_no_host: bool = False # in this case, assume the host is already there
     inference_vllm_ip: str = '127.0.0.1'
@@ -103,6 +103,8 @@ class RLConfig:
     # if base_model_format == 'vllm', we need a dummy hf model path to launch vllm inference engine
     inference_vllm_gpu_memory_utilization: float = 0.8
     inference_lllm_max_seq_len: int | None = None # We can additionally constrain max total ctx length for lllm backend
+    inference_sft_field_name: str | None = None # if it is sft, need to know the field name to extract response
+    inference_sft_run_lllm_eval: bool = True # if it is sft, whether to use our lllm inference to evaluate
     run_name: str | None = ''
     """run_name is appended to both save_path and wandb"""
     val_step: int = 20
@@ -137,7 +139,8 @@ def grpo_train_step(
         # Loss normalization
         loss_normalization: Literal["sequence", "constant"] = "sequence",
         normalization_constant: int | None = None,
-        response_token_ids: list | None = None # if provided, no need to retokenized response to ensure inference-training consistency
+        response_token_ids: list | None = None, # if provided, no need to retokenized response to ensure inference-training consistency
+        is_sft: bool = False # we view sft as a special mode that corresponds to response_token from instruction set, all reward = 1, and group_size = 1
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
 
     macro_batch_size = len(repeated_prompts)
@@ -146,11 +149,15 @@ def grpo_train_step(
 
     # stage 1: grading
     raw_rewardses, raw_rewards_metadatas = [], []
-    for i in range(0, macro_batch_size, group_size):
-        raw_rewards, raw_rewards_metadata = compute_rollout_rewards(reward_fn, rollout_responses[i: i+group_size], repeated_ground_truths[i: i+group_size])
-        raw_rewardses.append(raw_rewards)
-        raw_rewards_metadatas.append(raw_rewards_metadata)
-    raw_rewards = torch.concat(raw_rewardses)
+    if is_sft:
+        raw_rewards = torch.ones((len(rollout_responses),), dtype=torch.float)
+        raw_rewards_metadatas.append({'reward/mean': 1.})
+    else:
+        for i in range(0, macro_batch_size, group_size):
+            raw_rewards, raw_rewards_metadata = compute_rollout_rewards(reward_fn, rollout_responses[i: i+group_size], repeated_ground_truths[i: i+group_size])
+            raw_rewardses.append(raw_rewards)
+            raw_rewards_metadatas.append(raw_rewards_metadata)
+        raw_rewards = torch.concat(raw_rewardses)
 
     # stage 2: compute advantage
     advantages, advantage_metadata = compute_group_normalized_rewards(raw_rewards, group_size, baseline, advantage_eps, advantage_normalizer)
@@ -240,15 +247,21 @@ if __name__ == '__main__':
     # config parameter validation
     assert config.trainer.batch_size % config.trainer.group_size == 0
     if config.base_model_format == 'lllm':
-        assert config.inference_vllm_dummy_model_path is not None, "if base_model_format == 'lllm', we need a dummy hf model path to launch vllm inference engine"
+        if config.inference_backend == 'vllm':
+            assert config.inference_vllm_dummy_model_path is not None, "if base_model_format == 'lllm', we need a dummy hf model path to launch vllm inference engine"
         assert config.tokenizer_path is not None, "if base_model_format == 'lllm', need to specify tokenizer_path"
         assert config.model_config is not None, "if base_model_format == 'lllm', need to specify model_config"
-    # assert config.inference_backend == 'vllm', 'backend engine from our own lllm is not supported yet until I know how to dynamically update engine weights'
     if config.inference_backend == 'vllm':
         assert config.inference_device.startswith('cuda:'), 'VLLM inference device should be of the format cuda:X'
         assert config.device != config.inference_device, 'If using vllm, should be on different devices'
     if config.inference_backend == 'lllm':
         assert config.device == config.inference_device, 'If using lllm, should be on the same device'
+    if config.inference_backend == 'sft':
+        assert config.trainer.group_size == 1
+        assert config.inference_sft_field_name is not None
+        assert config.trainer.baseline == 'none'
+        assert config.trainer.advantage_normalizer == 'none'
+        assert config.trainer.loss_normalization == 'sequence'
     if config.trainer.rollout_batch_size is not None:
         assert config.trainer.batch_size % config.trainer.rollout_batch_size == 0
 
@@ -303,15 +316,30 @@ if __name__ == '__main__':
     with open(config.prompt_template, 'r') as f:
         chat_template = f.read()
     train_datasets: list[dict] = []
-    val_datasets: list[dict] = []
     with open(config.train_data, 'r') as f:
         for line in f.readlines():
             if line.strip():
                 train_datasets.append(json.loads(line))
-    # with open(config.val_data, 'r') as f:
-    #     for line in f.readlines():
-    #         if line.strip():
-    #             val_datasets.append(json.loads(line))
+    val_datasets = []
+    # no need to load val data for now, unless it is for sft where we need to compute validation data loss
+    if config.inference_backend == 'sft':
+        with open(config.val_data, 'r') as f:
+            for line in f.readlines():
+                if line.strip():
+                    val_datasets.append(json.loads(line))
+
+    # data moderator: (1) extract ground_truth answer str for grader to use; (2) if it is sft, moderate the response format to fit with grading criteria.
+    # It is dataset specific. In the future need to move it to a better place.
+    if config.task_name == 'gsm8k':
+        for item in train_datasets:
+            item['**final_answer'] = item['answer'][item['answer'].find('####') + 4:].strip()
+        if config.inference_backend == 'sft':
+            for item in train_datasets:
+                item['answer'] = item['answer'].replace('\n#### ', '</think> <answer> ') + ' </answer>'
+            for item in val_datasets:
+                item['answer'] = item['answer'].replace('\n#### ', '</think> <answer> ') + ' </answer>'
+    else:
+        raise NotImplementedError
 
     # launch vllm server, then replace dummy parameter with the real one
     print('Setting up vllm server...')
@@ -347,11 +375,13 @@ if __name__ == '__main__':
         vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)
     elif config.inference_backend == 'lllm':
         pass
+    elif config.inference_backend == 'sft':
+        pass
     else:
         raise NotImplementedError
 
     # task-specific formulator, grader, and valgrader fns
-    question_formulator: Callable[[dict, str], str] = get_question_formulator(config.task_name)
+    question_formulator: Callable[[dict], str] = lambda x: get_question_formulator(config.task_name)(x, chat_template)
     eval_config_class, task_set_grader = get_testable_task_setgrader(config.task_name)
     if config.task_name == 'gsm8k':
         # need to first determine the prompt type
@@ -379,7 +409,8 @@ if __name__ == '__main__':
                 'vllm_ip': config.inference_vllm_ip,
                 'vllm_port': config.inference_vllm_port
             }
-        elif config.inference_backend == 'lllm':
+        elif config.inference_backend == 'lllm' or config.inference_backend == 'sft':
+            # a side effect: if it is sft, since group size is 1, we only measure pass@1
             eval_config |= {
                 'lllm_server_no_host': True,
                 'lllm_max_seq_len': config.inference_lllm_max_seq_len
@@ -393,7 +424,6 @@ if __name__ == '__main__':
         'stat_model_param': model.count_parameters()[0],
         'stat_model_non_embed_param': model.count_parameters()[1],
         'stat_dataset_len': len(train_datasets),
-        'stet_caldataset_len': len(val_datasets),
         'stat_epochs': n_samp_per_batch * config.trainer.tot_steps / len(train_datasets),
         'stat_n_samp_per_batch': n_samp_per_batch
     }
@@ -419,15 +449,11 @@ if __name__ == '__main__':
             data_indexes = [idx % len(train_datasets) for idx in range(now_step * n_samp_per_batch, (now_step + 1) * n_samp_per_batch)] # wrap around
             train_data_batch = [train_datasets[idx] for idx in data_indexes]
             train_data_repeated = [x for y in [[item] * config.trainer.group_size for item in train_data_batch] for x in y] # [q1, q1, q1, q2, q2, q2, ...]
-            prompts = [question_formulator(item, chat_template) for item in train_data_repeated]
+            prompts = [question_formulator(item) for item in train_data_repeated]
             ground_truths = []
-            if config.task_name == 'gsm8k':
-                for item in train_data_repeated:
-                    final_answer = item['answer'][item['answer'].find('####') + 4:].strip()
-                    ground_truths.append(final_answer)
-            else:
-                raise NotImplementedError
-
+            for item in train_data_repeated:
+                ground_truths.append(item['**final_answer'])
+            
             print('Inferencing...')
             if config.inference_backend == 'vllm':
                 rollout_completions = vllm_utils.generate_completions(vllm_base_url, init_vllm_model_path, prompts, vllm_sampling_params, config.trainer.rollout_batch_size)
@@ -439,6 +465,11 @@ if __name__ == '__main__':
                         generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, max_seq_len=config.inference_lllm_max_seq_len, include_stop_str_in_output=True, verbose=False)
                     )
                 torch.cuda.synchronize()
+            elif config.inference_backend == 'sft':
+                # extract
+                rollout_completions = [LCompletion(prompt=prompt, 
+                                                   text=full_item[config.inference_sft_field_name] + (tokenizer.eos_token if tokenizer.eos_token is not None else ''), token_ids=None, finish_reason='stop') 
+                                        for prompt, full_item in zip(prompts, train_data_repeated)]
             else:
                 raise NotImplementedError
             rollout_responses = [c.text if c.text else ' ' for c in rollout_completions]
@@ -452,12 +483,12 @@ if __name__ == '__main__':
 
             print('Training...')
             # fully online RL
-            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.loss_normalization, config.trainer.normalization_constant, response_token_ids=response_token_ids) # response_token_ids for debug
+            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.loss_normalization, config.trainer.normalization_constant, response_token_ids=response_token_ids, is_sft=config.inference_backend == 'sft') # response_token_ids for debug
 
             print('Logging...')
-            train_metadata = metadata | rollout_metadata | {'loss': loss.item(), 'time': time.time() - stime, 'lr': now_lr}
+            train_metadata = metadata | rollout_metadata | {'loss': loss.item(), 'time': time.time() - stime, 'lr': now_lr, 'epoch': (now_step + 1) * n_samp_per_batch / len(train_datasets)}
             train_metadata = {('train/' + k): v for k, v in train_metadata.items()}
-            print('\n'.join([k + '=' + (f'{train_metadata[k].item()}' if isinstance(train_metadata[k], torch.Tensor) else f'{train_metadata[k]}') for k in ['train/loss', 'train/grad_norm', 'train/token_entropy', 'train/length/mean', 'train/reward/mean', 'train/min_response_len']]))
+            print('\n'.join([k + '=' + (f'{train_metadata[k].item()}' if isinstance(train_metadata[k], torch.Tensor) else f'{train_metadata[k]}') for k in ['train/loss', 'train/grad_norm', 'train/token_entropy', 'train/length/mean', 'train/reward/mean', 'train/min_response_len', 'train/max_response_len']]))
             wandb.log(train_metadata, step=now_step)
 
             print('Weight sync...')
@@ -473,21 +504,30 @@ if __name__ == '__main__':
                 print('Validation...')
                 eval_config.run_suffix = f'rl_eval_step{now_step}'
                 eval_config.save_dir = str(save_path / 'val' / f'step_{now_step:07}')
+                overall_stats = None
+                val_metadata = {}
                 if config.inference_backend == 'vllm':
                     overall_stats, val_details = task_set_grader(eval_config, True, False, False, None, None)
-                elif config.inference_backend == 'lllm':
+                elif config.inference_backend == 'lllm' or (config.inference_backend == 'sft' and config.inference_sft_run_lllm_eval):
                     overall_stats, val_details = task_set_grader(eval_config, True, False, True, model, tokenizer)
+                elif config.inference_backend == 'sft':
+                    pass
                 else:
                     raise NotImplementedError
-                print(overall_stats)
-                val_metadata = {}
-                if config.task_name == 'gsm8k':
-                    for kk in ['pass1', 'passn']:
-                        for kkk in ['reward', 'answer_reward', 'format_reward', 'stopped', 'ans_len']:
-                            aggregated_num = sum([item[kk][kkk] for item in val_details]) / len(val_details)
-                            val_metadata[f'val/{kk}/{kkk}'] = aggregated_num
-                else:
-                    raise NotImplementedError
+                if overall_stats:
+                    print(overall_stats)
+                    if config.task_name == 'gsm8k':
+                        for kk in ['pass1', 'passn']:
+                            for kkk in ['reward', 'answer_reward', 'format_reward', 'stopped', 'ans_len']:
+                                aggregated_num = sum([item[kk][kkk] for item in val_details]) / len(val_details)
+                                val_metadata[f'val/{kk}/{kkk}'] = aggregated_num
+                    else:
+                        raise NotImplementedError
+                    
+                if config.inference_backend == 'sft':
+                    new_overall_stats, new_val_details = compute_valloss(eval_config.batch_size, model, tokenizer, val_datasets, config.inference_sft_field_name, question_formulator)
+                    val_metadata |= {f'val/{kk}': vv for kk, vv in new_val_details.items()}
+
                 wandb.log(val_metadata, step=now_step)
 
             if now_step % config.rollout_save_step == 0 or now_step == config.trainer.tot_steps - 1:
@@ -495,12 +535,13 @@ if __name__ == '__main__':
                 rollouts = []
                 for prompt, ground_truth, completion in zip(prompts, ground_truths, rollout_completions):
                     rollouts.append({
-                        'prompt': prompt,
-                        'ground_truth': ground_truth,
-                        'completion': completion.text,
-                        'completion_reason': completion.finish_reason,
-                        'completion_len': len(completion.token_ids)
-                    })
+                            'prompt': prompt,
+                            'ground_truth': ground_truth,
+                            'completion': completion.text,
+                            'completion_reason': completion.finish_reason
+                        } | ({} if completion.token_ids is None else {
+                                'completion_len': len(completion.token_ids)
+                            }))
                 trace_save_path = save_path / 'train' / f'step_{now_step:07}'
                 if not os.path.exists(trace_save_path):
                     os.makedirs(trace_save_path)
