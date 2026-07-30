@@ -6,6 +6,7 @@
   "save_path": "models/rl/olmo2_1B_gsm8k/base_rl_r1zero_rft",
   "train_data": "data/gsm8k/train.jsonl",
   "val_data": "data/gsm8k/test.jsonl",
+  "logging_level": "ERROR",
   "trainer": {
     "batch_size": 256,
     "tot_steps": 200,
