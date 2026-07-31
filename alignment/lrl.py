@@ -240,8 +240,12 @@ uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_g
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/r1_zero_three_shot_gsm8k.prompt" --run-name prpt_3shot
 uv run alignment/lrl.py --config_path configs/sft_config_olmo_base_gsm8k.yaml --device cuda:0
 
+I found best learning rate for online GRPO is 2e-5
+
 sft baseline:
 PYTORCH_ALLOC_CONF=expandable_segments:True uv run alignment/lrl.py --config_path configs/sft_config_olmo_base_gsm8k.yaml --device cuda:0
+sft rl:
+uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --base_model_ckpt models/rl/olmo2_1B_gsm8k/base_sft_20260730_222909/hf_ckpts/step_0000799/ --save_path "models/rl/olmo2_1B_gsm8k/sft_rl_r1zero" --run-name lr_2e-5
 """
 
 if __name__ == '__main__':

@@ -3,8 +3,10 @@
 Now it's a more general codebase.
 
 TODO:
-[ ] Interleave RLVR generation and traning with bounded buffer.
+[ ] Eval of SFT warmup RL training.
+[ ] Interleave RLVR generation and training with bounded buffer.
 [ ] SFT and DPO support.
+[ ] Eval of DPO training on GSM8K.
 [ ] Support Muon optimizer.
 [ ] Support LoRA.
 [ ] Basic Triton-based optimization.
