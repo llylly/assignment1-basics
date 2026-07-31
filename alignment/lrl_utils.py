@@ -147,33 +147,52 @@ def compute_policy_gradient_loss(
     """
     if raw_rewards_or_advantages.ndim == 1:
         raw_rewards_or_advantages = raw_rewards_or_advantages.view(-1, 1)
+    raw_rewards_or_advantages = raw_rewards_or_advantages.to(policy_log_probs.device)
     metadata = {}
     if importance_reweighting_method == 'none':
-        loss = - raw_rewards_or_advantages.to(policy_log_probs.device) * policy_log_probs
+        loss = - raw_rewards_or_advantages * policy_log_probs
+    
     elif importance_reweighting_method == 'noclip':
         assert old_log_probs is not None
-        loss = - raw_rewards_or_advantages.to(policy_log_probs) * (policy_log_probs - old_log_probs).exp()
+        metadata['clip_low_ratio'] = 0.0
+        metadata['clip_high_ratio'] = 0.0
+        loss = - raw_rewards_or_advantages * (policy_log_probs - old_log_probs).exp()
+    
     elif importance_reweighting_method == 'grpo':
         assert old_log_probs is not None
         assert cliprange
         w = (policy_log_probs - old_log_probs).exp()
-        loss = - torch.minimum(raw_rewards_or_advantages.to(policy_log_probs) * w, raw_rewards_or_advantages.to(policy_log_probs) * w.clip(1. - cliprange, 1. + cliprange))
+        if response_mask is not None:
+            metadata['clip_high_ratio'] = ((raw_rewards_or_advantages > 0.001) * (w > 1. + cliprange) * response_mask).sum().item() / response_mask.sum().item()
+            metadata['clip_low_ratio'] = ((raw_rewards_or_advantages < -0.001) * (w < 1. - cliprange) * response_mask).sum().item() / response_mask.sum().item()
+        loss = - torch.minimum(raw_rewards_or_advantages * w, raw_rewards_or_advantages * w.clip(1. - cliprange, 1. + cliprange))
+    
     elif importance_reweighting_method == 'cispo':
         assert old_log_probs is not None
         assert cliprange
         w = (policy_log_probs - old_log_probs).exp()
-        loss = - raw_rewards_or_advantages.to(policy_log_probs) * w.clip(max=1. + cliprange)
+        if response_mask is not None:
+            metadata['clip_high_ratio'] = ((w > 1. + cliprange) * response_mask).sum().item() / response_mask.sum().item()
+        metadata['clip_low_ratio'] = 0.
+        loss = - raw_rewards_or_advantages * w.clip(max=1. + cliprange)
+    
     elif importance_reweighting_method == 'dapo':
         assert old_log_probs is not None
         assert cliprange
         assert clip_higher_range
         w = (policy_log_probs - old_log_probs).exp()
+        if response_mask is not None:
+            metadata['clip_high_ratio'] = ((raw_rewards_or_advantages > 0.001) * (w > 1. + clip_higher_range) * response_mask).sum().item() / response_mask.sum().item()
+            metadata['clip_low_ratio'] = ((raw_rewards_or_advantages < -0.001) * (w < 1. - cliprange) * response_mask).sum().item() / response_mask.sum().item()
         loss = - torch.minimum(raw_rewards_or_advantages.to(policy_log_probs) * w, raw_rewards_or_advantages.to(policy_log_probs) * w.clip(1. - cliprange, 1. + clip_higher_range))
+
     elif importance_reweighting_method == 'gspo':
         assert old_log_probs is not None
         assert cliprange
         assert response_mask is not None
         w = torch.exp(((policy_log_probs - old_log_probs) * response_mask).sum(dim=-1) / response_mask.sum(dim=-1)).view(-1, 1)
+        metadata['clip_high_ratio'] = ((raw_rewards_or_advantages > 0.001) * (w > 1. + cliprange)).sum().item() / raw_rewards_or_advantages.numel()
+        metadata['clip_low_ratio'] = ((raw_rewards_or_advantages < -0.001) * (w < 1. - cliprange)).sum().item() / raw_rewards_or_advantages.numel()
         loss = - torch.minimum(raw_rewards_or_advantages.to(w) * w, raw_rewards_or_advantages.to(w) * w.clip(1. - cliprange, 1. + cliprange))
         loss = loss.view(-1, 1) * torch.ones_like(policy_log_probs) # note: this is already a sequence level loss, let's now re-distribute it to token level, then gspo has to be used with sequence normalization otherwise it induces bias
         return loss, metadata

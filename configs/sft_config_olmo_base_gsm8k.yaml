@@ -16,7 +16,8 @@
   "trainer": {
     "batch_size": 64,
     "tot_steps": 800,
-    "learning_rate": 0.000005,
+    "learning_rate": 0.00002,
+    "gradient_clipping": 2.0,
     "group_size": 1,
     "gradient_accumulation_steps": 32,
     "rollout_batch_size": 48,

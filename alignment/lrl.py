@@ -173,6 +173,7 @@ def grpo_train_step(
     actual_macro_batch_size = ((advantages >= a_prune_eps).sum() + (advantages <= -a_prune_eps).sum()).item()
 
     # stage 4: within the microbatch, compute logits and update the model
+    token_level_loss_metadatas = []
     batch_loss = torch.tensor(0., dtype=model.dtype, device=model.device)
     mean_token_entropy = torch.tensor(0., dtype=model.dtype, device=model.device)
     for i in tqdm(range(0, macro_batch_size, micro_batch_size)):
@@ -196,6 +197,7 @@ def grpo_train_step(
         with torch.no_grad():
             batch_loss = batch_loss + microbatch_loss
             mean_token_entropy += ((token_entropy * response_masks[i: i+micro_batch_size][seq_keep_mask]).sum(dim=-1) / response_masks[i: i+micro_batch_size][seq_keep_mask].sum(dim=-1)).sum() / actual_macro_batch_size
+        token_level_loss_metadatas.append(token_level_loss_metadata)
 
     # stage 5: grad norm clipping & update weights for the mini-batch
     grad_norm = LGradientClipping(model.parameters(), max_grad_norm)
@@ -209,6 +211,9 @@ def grpo_train_step(
     for k in raw_rewards_metadatas[0]:
         raw_rewards_metadata_agg[k] = sum([item[k] for item in raw_rewards_metadatas]) / len(raw_rewards_metadatas)
     advantage_metadata_agg = {k: (sum(v) / len(v)) if isinstance(v, list) else v for k, v in advantage_metadata.items()}
+    token_level_loss_metadata_agg = {}
+    for k in token_level_loss_metadatas[0]:
+        token_level_loss_metadata_agg[k] = sum([item[k] for item in token_level_loss_metadatas]) / len(token_level_loss_metadatas)
     metadata = {
         'num_prompts': num_prompts,
         'micro_batch_size': micro_batch_size,
@@ -218,7 +223,7 @@ def grpo_train_step(
         'ctx_len': input_ids.shape[-1],
         'min_response_len': tokenized['response_mask'].sum(dim=-1).amin(dim=-1),
         'max_response_len': tokenized['response_mask'].sum(dim=-1).amax(dim=-1)
-    } | raw_rewards_metadata_agg | advantage_metadata_agg
+    } | raw_rewards_metadata_agg | advantage_metadata_agg | token_level_loss_metadata_agg
 
     return batch_loss, metadata
 
