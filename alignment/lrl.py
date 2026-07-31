@@ -53,7 +53,7 @@ class RLTrainerConfig:
     rollout_stop_words: list[str] = field(default_factory=lambda: ['</answer>'])
 
     rollout_batch_size: int | None = None
-    """If none, equal to batch_size, otherwise whould be a divisor of batch_size"""
+    """If none, equal to batch_size, otherwise whould be a divisor of batch_size -> maybe not needed, now this is lifted"""
     max_seqlen_clipping: int | None = None
     """If none, clip to model's context length"""
 

@@ -2,14 +2,18 @@
 
 Now it's a more general codebase.
 
-Now working on:
-[ ] Support loading open-source models
-
 TODO:
-[ ] Support Muon optimizer 
-[ ] Implement Triton kernel for attention
-[ ] Distributed training
+[ ] Interleave RLVR generation and traning with bounded buffer.
+[ ] SFT and DPO support.
+[ ] Support Muon optimizer.
+[ ] Support LoRA.
+[ ] Basic Triton-based optimization.
+[ ] Distributed training.
+[ ] Support loading and training Qwen3.5 DeltaNet and Kimi KDA models.
 [ ] Mechanistic interpretability - start from attention visualization figure for example
+[ ] Support common pretraining benchmarks.
+[ ] Support common model merging benchmarks.
+[ ] Support common RLVR & PPO tasks.
 
 Setup guide:
 - upload data/
