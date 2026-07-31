@@ -62,8 +62,9 @@ class RLTrainerConfig:
     advantage_eps: float = 1e-6
     advantage_normalizer: Literal["std", "none", "mean"] = "std"
     # Importance reweighting and clipping
-    importance_reweighting_method: Literal["none", "noclip", "grpo", "gspo"] = "none"
+    importance_reweighting_method: Literal['none', 'noclip', 'grpo', 'gspo', 'cispo', 'dapo'] = "none"
     cliprange: float | None = None
+    clip_higher_range: float | None = None # only used for dapo
     # Loss normalization
     loss_normalization: Literal["sequence", "constant"] = "sequence"
     normalization_constant: int | None = None
@@ -133,9 +134,10 @@ def grpo_train_step(
         advantage_eps: float = 1e-6,
         advantage_normalizer: Literal["std", "none", "mean"] = "std",
         # Importance reweighting and clipping
-        importance_reweighting_method: Literal["none", "noclip", "grpo", "gspo"] = "none",
+        importance_reweighting_method: Literal['none', 'noclip', 'grpo', 'gspo', 'cispo', 'dapo'] = "none",
         old_log_probs: torch.Tensor | None = None,
         cliprange: float | None = None,
+        clip_higher_range: float | None = None, # only used for dapo
         # Loss normalization
         loss_normalization: Literal["sequence", "constant"] = "sequence",
         normalization_constant: int | None = None,
@@ -180,7 +182,7 @@ def grpo_train_step(
             continue
         model_ret = get_response_log_probs(model, input_ids[i: i+micro_batch_size][seq_keep_mask], labels[i: i+micro_batch_size][seq_keep_mask], return_token_entropy=True)
         log_probs, token_entropy = model_ret['log_probs'], model_ret['token_entropy'] # [B,L] and [B]
-        token_level_loss, token_level_loss_metadata = compute_policy_gradient_loss(advantages[i: i+micro_batch_size][seq_keep_mask], log_probs, importance_reweighting_method, old_log_probs[i: i+micro_batch_size][seq_keep_mask] if old_log_probs else None, cliprange, response_masks[i: i+micro_batch_size][seq_keep_mask])
+        token_level_loss, token_level_loss_metadata = compute_policy_gradient_loss(advantages[i: i+micro_batch_size][seq_keep_mask], log_probs, importance_reweighting_method, old_log_probs[i: i+micro_batch_size][seq_keep_mask] if old_log_probs is not None else None, cliprange, response_masks[i: i+micro_batch_size][seq_keep_mask], clip_higher_range)
         microbatch_loss = aggregate_loss_across_microbatch_sequence(token_level_loss, response_masks[i: i+micro_batch_size][seq_keep_mask], loss_normalization, normalization_constant)
         # calibration
         if loss_normalization == 'sequence':
@@ -265,6 +267,8 @@ if __name__ == '__main__':
         assert config.inference_sft_field_name is not None
         assert config.trainer.baseline == 'none'
         assert config.trainer.advantage_normalizer == 'none'
+        assert config.trainer.loss_normalization == 'sequence'
+    if config.trainer.importance_reweighting_method == 'gspo':
         assert config.trainer.loss_normalization == 'sequence'
     # if config.trainer.rollout_batch_size is not None:
     #     assert config.trainer.batch_size % config.trainer.rollout_batch_size == 0
@@ -488,7 +492,7 @@ if __name__ == '__main__':
 
             print('Training...')
             # fully online RL
-            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.loss_normalization, config.trainer.normalization_constant, response_token_ids=response_token_ids, is_sft=config.inference_backend == 'sft') # response_token_ids for debug
+            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.clip_higher_range, config.trainer.loss_normalization, config.trainer.normalization_constant, response_token_ids=response_token_ids, is_sft=config.inference_backend == 'sft') # response_token_ids for debug
 
             print('Logging...')
             train_metadata = metadata | rollout_metadata | {'loss': loss.item(), 'time': time.time() - stime, 'lr': now_lr, 'epoch': (now_step + 1) * n_samp_per_batch / len(train_datasets)}

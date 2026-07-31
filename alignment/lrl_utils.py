@@ -136,10 +136,11 @@ def compute_group_normalized_rewards(
 def compute_policy_gradient_loss(
         raw_rewards_or_advantages: torch.Tensor,
         policy_log_probs: torch.Tensor,
-        importance_reweighting_method: Literal['none', 'noclip', 'grpo', 'gspo'] = 'none',
+        importance_reweighting_method: Literal['none', 'noclip', 'grpo', 'gspo', 'cispo', 'dapo'] = 'none',
         old_log_probs: torch.Tensor | None = None,
         cliprange: float | None = None,
         response_mask: torch.Tensor | None = None,
+        clip_higher_range: float | None = None
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """
         This compute the per-token policy-gradient loss, i.e., excluding 1/(BG) and 1/len(y) coefficient in GRPO that will be introduced in later aggregation
@@ -149,6 +150,33 @@ def compute_policy_gradient_loss(
     metadata = {}
     if importance_reweighting_method == 'none':
         loss = - raw_rewards_or_advantages.to(policy_log_probs.device) * policy_log_probs
+    elif importance_reweighting_method == 'noclip':
+        assert old_log_probs is not None
+        loss = - raw_rewards_or_advantages.to(policy_log_probs) * (policy_log_probs - old_log_probs).exp()
+    elif importance_reweighting_method == 'grpo':
+        assert old_log_probs is not None
+        assert cliprange
+        w = (policy_log_probs - old_log_probs).exp()
+        loss = - torch.minimum(raw_rewards_or_advantages.to(policy_log_probs) * w, raw_rewards_or_advantages.to(policy_log_probs) * w.clip(1. - cliprange, 1. + cliprange))
+    elif importance_reweighting_method == 'cispo':
+        assert old_log_probs is not None
+        assert cliprange
+        w = (policy_log_probs - old_log_probs).exp()
+        loss = - raw_rewards_or_advantages.to(policy_log_probs) * w.clip(max=1. + cliprange)
+    elif importance_reweighting_method == 'dapo':
+        assert old_log_probs is not None
+        assert cliprange
+        assert clip_higher_range
+        w = (policy_log_probs - old_log_probs).exp()
+        loss = - torch.minimum(raw_rewards_or_advantages.to(policy_log_probs) * w, raw_rewards_or_advantages.to(policy_log_probs) * w.clip(1. - cliprange, 1. + clip_higher_range))
+    elif importance_reweighting_method == 'gspo':
+        assert old_log_probs is not None
+        assert cliprange
+        assert response_mask is not None
+        w = torch.exp(((policy_log_probs - old_log_probs) * response_mask).sum(dim=-1) / response_mask.sum(dim=-1)).view(-1, 1)
+        loss = - torch.minimum(raw_rewards_or_advantages.to(w) * w, raw_rewards_or_advantages.to(w) * w.clip(1. - cliprange, 1. + cliprange))
+        loss = loss.view(-1, 1) * torch.ones_like(policy_log_probs) # note: this is already a sequence level loss, let's now re-distribute it to token level, then gspo has to be used with sequence normalization otherwise it induces bias
+        return loss, metadata
     else:
         raise NotImplementedError
     if response_mask is not None:

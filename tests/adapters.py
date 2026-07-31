@@ -340,7 +340,7 @@ def run_grpo_train_step(
                 before clipping, and any other statistics you might want to log.
     """
     from alignment.lrl import grpo_train_step
-    return grpo_train_step(model, tokenizer, optimizer, gradient_accumulation_steps, max_grad_norm, reward_fn, repeated_prompts, rollout_responses, repeated_ground_truths, group_size, baseline, advantage_eps, advantage_normalizer, importance_reweighting_method, old_log_probs, cliprange, loss_normalization, normalization_constant)
+    return grpo_train_step(model, tokenizer, optimizer, gradient_accumulation_steps, max_grad_norm, reward_fn, repeated_prompts, rollout_responses, repeated_ground_truths, group_size, baseline, advantage_eps, advantage_normalizer, importance_reweighting_method, old_log_probs, cliprange, None, loss_normalization, normalization_constant)
 
 
 """
