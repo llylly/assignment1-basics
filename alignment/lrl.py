@@ -254,7 +254,7 @@ def rollout_mainloop(config: RLConfig, train_datasets: list[dict], start_step: i
                 weight_sync_signals['rollout'] = 'ready'
                 while weight_sync_signals['trainer'] != 'no_need_sync':
                     # busy sleep wait
-                    time.sleep(0.5)
+                    time.sleep(0.1)
                 weight_sync_signals['rollout'] = 'not_ready'
             if weight_sync_signals['trainer'] == 'stopped':
                 raise KeyboardInterrupt
@@ -270,12 +270,12 @@ def rollout_mainloop(config: RLConfig, train_datasets: list[dict], start_step: i
 
             # wait till space in queue
             while queue.full():
-                time.sleep(0.5)
+                time.sleep(0.1)
                 if weight_sync_signals['trainer'] == 'need_sync':
                     weight_sync_signals['rollout'] = 'ready'
                     while weight_sync_signals['trainer'] != 'no_need_sync':
                         # busy sleep wait
-                        time.sleep(0.5)
+                        time.sleep(0.1)
                     weight_sync_signals['rollout'] = 'not_ready'
                 if weight_sync_signals['trainer'] == 'stopped':
                     raise KeyboardInterrupt
@@ -332,6 +332,9 @@ sft baseline:
 PYTORCH_ALLOC_CONF=expandable_segments:True uv run alignment/lrl.py --config_path configs/sft_config_olmo_base_gsm8k.yaml --device cuda:0
 sft rl:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --base_model_ckpt models/rl/olmo2_1B_gsm8k/base_sft_20260730_222909/hf_ckpts/step_0000799/ --save_path "models/rl/olmo2_1B_gsm8k/sft_rl_r1zero" --run-name lr_2e-5
+
+offpolicy rl:
+(GRPO) PYTORCH_ALLOC_CONF=expandable_segments:True uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_async_grpo.yaml --inference_backend vllm --device cuda:2 --inference_device cuda:3
 """
 
 if __name__ == '__main__':
@@ -605,7 +608,7 @@ if __name__ == '__main__':
             print('Weight sync...')
             weight_sync_signals['trainer'] = 'need_sync'
             while weight_sync_signals['rollout'] != 'ready':
-                time.sleep(0.5)
+                time.sleep(0.1)
             if config.inference_backend == 'vllm':
                 # no need to re-init
                 vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)

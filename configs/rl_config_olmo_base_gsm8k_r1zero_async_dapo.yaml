@@ -1,0 +1,30 @@
+{
+  "base_model_ckpt": "models/OLMo-2-0425-1B",
+  "base_model_format": "olmo_hf",
+  "task_name": "gsm8k",
+  "prompt_template": "alignment/prompts/r1_zero.prompt",
+  "save_path": "models/rl/olmo2_1B_gsm8k/base_rl_r1zero_async",
+  "train_data": "data/gsm8k/train.jsonl",
+  "val_data": "data/gsm8k/test.jsonl",
+  "val_step": 20,
+  "rollout_save_step": 10,
+  "ckpt_save_step": 50,
+  "logging_level": "ERROR",
+  "trainer": {
+    "batch_size": 256,
+    "tot_steps": 200,
+    "learning_rate": 0.00001,
+    "group_size": 8,
+    "gradient_accumulation_steps": 128,
+    "rollout_batch_size": 256,
+    "rollout_temperature": 1.0,
+    "rollout_max_new_tokens": 512,
+    "baseline": "mean",
+    "advantage_normalizer": "std",
+    "importance_reweighting_method": "dapo",
+    "cliprange": 0.2,
+    "clip_higher_range": 0.3,
+    "async_rl_maxstep": 3
+  },
+  'run_name': 'dapo_3step_stale'
+}
