@@ -188,6 +188,7 @@ def generate_completions(
     prompts: list[str],
     sampling_params: dict,
     batch_size: int | None = None,
+    return_log_probs: bool = False,
 ) -> list[LCompletion]:
     if batch_size is not None and batch_size <= 0:
         raise ValueError("batch_size must be positive.")
@@ -207,6 +208,8 @@ def generate_completions(
             "seed": sampling_params["seed"],
             "return_token_ids": True,
         }
+        if return_log_probs:
+            payload["logprobs"] = 1
         if sampling_params.get("stop") is not None:
             payload["stop"] = sampling_params["stop"]
             payload["include_stop_str_in_output"] = sampling_params.get("include_stop_str_in_output", False)
@@ -219,6 +222,7 @@ def generate_completions(
                 text=choice["text"],
                 token_ids=choice.get("token_ids") or [],
                 finish_reason=choice.get("finish_reason"),
+                log_probs=choice.get("logprobs", {}).get("token_logprobs", []) if return_log_probs else None
             )
             for i,choice in enumerate(choices)
         )

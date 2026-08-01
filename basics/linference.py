@@ -46,6 +46,7 @@ class LCompletion:
     text: str
     token_ids: list[int] | None
     finish_reason: str | None # "stop" / "length" / "content_filter"
+    log_probs: list[float] | None
 
 def sampler(y: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0): # y: [B, V] # output [B, 1]
     if temperature <= 1e-10:
@@ -71,6 +72,7 @@ def sampler(y: torch.Tensor, temperature: float = 1.0, top_p: float = 1.0): # y:
 def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], tokenizer: LTokenizer,
              max_new_tokens: int = 256, temperature: float = 1.0, top_p: float = 1.0, 
              pad_token_id = -100, extra_stop_tokens: list[str] | None = None, include_stop_str_in_output=False, max_seq_len: int | None = None,
+             return_log_probs: bool = False,
              verbose=True) -> List[LCompletion]:
     
     # tokenize and left padding
@@ -97,6 +99,8 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
     if eof:
         stop_token_ids = torch.tensor([eof] + stop_token_ids, device=model.device).view(1, -1)
         extra_stop_tokens.append(tokenizer.eos_token)
+
+    log_probs = None if not return_log_probs else []
     
     if max_seq_len is None:
         max_seq_len = model.max_seq_len
@@ -119,6 +123,14 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
             for i in range(len(prompts)):
                 if not_finished[i]:
                     ys[i].append(pred_y[ii].item())
+
+                    if return_log_probs:
+                        if len(log_probs) <= i:
+                            log_probs.append([])
+                        now_vocab_logit = last_y[ii]
+                        Z = now_vocab_logit.amax()
+                        log_probs[i].append((now_vocab_logit[pred_y[ii]] - Z - torch.log((now_vocab_logit - Z).exp().sum())))
+
                     try:
                         now_decoded = tokenizer.decode(ys[i])
                         if any([now_decoded.find(extra_stop_token) != -1 for extra_stop_token in extra_stop_tokens]):
@@ -148,7 +160,7 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
     stop_reasons = ['length' if not_finished[i] else 'stop' for i in range(len(prompts))]
     ret = []
 
-    for prompt, response_lst, stop_reason in zip(prompts, ys, stop_reasons):
+    for j, (prompt, response_lst, stop_reason) in enumerate(zip(prompts, ys, stop_reasons)):
         if include_stop_str_in_output:
             fin_response_lst = response_lst
         else:
@@ -156,9 +168,12 @@ def generate(model: LTransformerLM | LOlmo2TransformerLM, prompts: list[str], to
             for i in range(len(response_lst)):
                 if response_lst[i] in stop_token_ids:
                     fin_response_lst = response_lst[:i]
+                    if return_log_probs:
+                        log_probs[j] = log_probs[j][:i]
                     break
         response = tokenizer.decode(fin_response_lst)
-        ret.append(LCompletion(prompt, response, fin_response_lst, stop_reason))
+        ret.append(LCompletion(prompt, response, fin_response_lst, stop_reason,
+                               log_probs=None if not return_log_probs else torch.tensor(log_probs[j])))
     return ret
 
 """
