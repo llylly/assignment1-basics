@@ -15,6 +15,7 @@ import json
 import time
 import numpy as np
 import wandb
+import queue
 import threading
 from datetime import datetime
 from tqdm import tqdm
@@ -219,8 +220,9 @@ def grpo_train_step(
         raw_rewards_metadata_agg[k] = sum([item[k] for item in raw_rewards_metadatas]) / len(raw_rewards_metadatas)
     advantage_metadata_agg = {k: (sum(v) / len(v)) if isinstance(v, list) else v for k, v in advantage_metadata.items()}
     token_level_loss_metadata_agg = {}
-    for k in token_level_loss_metadatas[0]:
-        token_level_loss_metadata_agg[k] = sum([item[k] for item in token_level_loss_metadatas]) / len(token_level_loss_metadatas)
+    if len(token_level_loss_metadatas) > 0:
+        for k in token_level_loss_metadatas[0]:
+            token_level_loss_metadata_agg[k] = sum([item[k] for item in token_level_loss_metadatas]) / len(token_level_loss_metadatas)
     metadata = {
         'num_prompts': num_prompts,
         'micro_batch_size': micro_batch_size,
@@ -233,6 +235,83 @@ def grpo_train_step(
     } | raw_rewards_metadata_agg | advantage_metadata_agg | token_level_loss_metadata_agg
 
     return batch_loss, metadata
+
+
+weight_sync_signals = {"trainer": "no_need_sync", "rollout": "not_ready"}
+weight_version = 0 # not critical, for recording purpose only
+
+def rollout_mainloop(config: RLConfig, train_datasets: list[dict], start_step: int, queue: queue.Queue, inference_serv_proc, backend_specific_inference_params: dict):
+
+    if config.inference_backend == 'vllm':
+        vllm_base_url = backend_specific_inference_params['vllm_base_url']
+        init_vllm_model_path = backend_specific_inference_params['init_vllm_model_path']
+        vllm_sampling_params = backend_specific_inference_params['vllm_sampling_params']
+    
+    try:
+        for now_step in tqdm(range(start_step, config.trainer.tot_steps), desc='inferencing'):
+
+            if weight_sync_signals['trainer'] == 'need_sync':
+                weight_sync_signals['rollout'] = 'ready'
+                while weight_sync_signals['trainer'] != 'no_need_sync':
+                    # busy sleep wait
+                    time.sleep(0.5)
+                weight_sync_signals['rollout'] = 'not_ready'
+            if weight_sync_signals['trainer'] == 'stopped':
+                raise KeyboardInterrupt
+
+            # indexing the training data
+            data_indexes = [idx % len(train_datasets) for idx in range(now_step * n_samp_per_batch, (now_step + 1) * n_samp_per_batch)] # wrap around
+            train_data_batch = [train_datasets[idx] for idx in data_indexes]
+            train_data_repeated = [x for y in [[item] * config.trainer.group_size for item in train_data_batch] for x in y] # [q1, q1, q1, q2, q2, q2, ...]
+            prompts = [question_formulator(item) for item in train_data_repeated]
+            ground_truths = []
+            for item in train_data_repeated:
+                ground_truths.append(item['**final_answer'])
+
+            # wait till space in queue
+            while queue.full():
+                time.sleep(0.5)
+                if weight_sync_signals['trainer'] == 'need_sync':
+                    weight_sync_signals['rollout'] = 'ready'
+                    while weight_sync_signals['trainer'] != 'no_need_sync':
+                        # busy sleep wait
+                        time.sleep(0.5)
+                    weight_sync_signals['rollout'] = 'not_ready'
+                if weight_sync_signals['trainer'] == 'stopped':
+                    raise KeyboardInterrupt
+            
+            if config.inference_backend == 'vllm':
+                rollout_completions = vllm_utils.generate_completions(vllm_base_url, init_vllm_model_path, prompts, vllm_sampling_params, config.trainer.rollout_batch_size, return_log_probs=config.trainer.async_rl_maxstep > 0)
+            elif config.inference_backend == 'lllm':
+                # self batch
+                rollout_completions = []
+                for i in tqdm(range(0, len(prompts), config.trainer.rollout_batch_size)):
+                    rollout_completions.extend(
+                        generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, max_seq_len=config.trainer.max_seqlen_clipping, include_stop_str_in_output=True, return_log_probs=config.trainer.async_rl_maxstep > 0, verbose=False)
+                    )
+                torch.cuda.synchronize()
+            elif config.inference_backend == 'sft':
+                # extract
+                rollout_completions = [LCompletion(prompt=prompt, 
+                                                    text=full_item[config.inference_sft_field_name] + (tokenizer.eos_token if tokenizer.eos_token is not None else ''), token_ids=None, finish_reason='stop', log_probs=None) 
+                                        for prompt, full_item in zip(prompts, train_data_repeated)]
+            else:
+                raise NotImplementedError
+
+            queue.put({
+                'state': 'normal',
+                'rollout': rollout_completions,
+                'weight_version': weight_version
+            })
+            
+    finally:
+        if config.inference_backend == 'vllm':
+            vllm_utils.stop_server(inference_serv_proc)
+
+    queue.put({
+        'state': 'final_sentinel'
+    })
+
 
 """
 Usage:
@@ -247,7 +326,7 @@ uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_g
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --prompt_template "alignment/prompts/r1_zero_three_shot_gsm8k.prompt" --run-name prpt_3shot
 uv run alignment/lrl.py --config_path configs/sft_config_olmo_base_gsm8k.yaml --device cuda:0
 
-I found best learning rate for online GRPO is 2e-5
+I found best learning rate for online GRPO is 2e-5 though not very stable, the stable one is 1e-5
 
 sft baseline:
 PYTORCH_ALLOC_CONF=expandable_segments:True uv run alignment/lrl.py --config_path configs/sft_config_olmo_base_gsm8k.yaml --device cuda:0
@@ -286,9 +365,17 @@ if __name__ == '__main__':
         assert config.trainer.loss_normalization == 'sequence'
     if config.trainer.importance_reweighting_method == 'gspo':
         assert config.trainer.loss_normalization == 'sequence'
+    if config.trainer.async_rl_maxstep > 0:
+        # async RL
+        print('Using async RL')
+        assert config.inference_backend == 'vllm' # only support vllm
+        # assert config.trainer.importance_reweighting_method != "none" # has to do reweighting
+    else:
+        print('Using online RL / SFT')
     # if config.trainer.rollout_batch_size is not None:
     #     assert config.trainer.batch_size % config.trainer.rollout_batch_size == 0
 
+    # assemble save path and create save folder
     nowtime = datetime.now().strftime('_%Y%m%d_%H%M%S')
     original_save_path = config.save_path
     if config.save_path.endswith('/'):
@@ -305,7 +392,7 @@ if __name__ == '__main__':
     print('Things saved to', config.save_path)
     save_path = Path(config.save_path) # for later convenience
 
-    # construct model and optimizer
+    # construct model
     print('Loading model and optimizer...')
     torch.cuda.set_device(torch.device(config.device))
     if config.base_model_format == 'lllm':
@@ -320,11 +407,13 @@ if __name__ == '__main__':
         from basics.lmodeling_olmo import from_pretrained
         model, tokenizer = from_pretrained(config.base_model_ckpt, config.dtype, config.device, flash_attn=True)
 
+    # construct optimizer
     if config.trainer.opt_type == 'adam':
         optimizer = LAdamW(model.parameters(), config.trainer.learning_rate, (config.trainer.beta1, config.trainer.beta2), config.trainer.weight_decay)
     elif config.trainer.opt_type == 'sgd':
         optimizer = LSGD(model.parameters(), config.trainer.learning_rate, config.trainer.beta1, config.trainer.weight_decay)
 
+    # load resumed model and optimizer state and init start_step
     if config.resume_path:
         print('Resume loading...')
         start_step = load_checkpoint(config.resume_path, model, optimizer)
@@ -332,13 +421,14 @@ if __name__ == '__main__':
     else:
         start_step = 0
 
+    # populate some parameters
     if config.trainer.max_seqlen_clipping is None:
         config.trainer.max_seqlen_clipping = model.max_seq_len
     if config.trainer.rollout_batch_size is None:
         config.trainer.rollout_batch_size = config.trainer.batch_size
 
     # data loading
-    # now no shuffle to ensure reproducibility
+    # now no shuffle to improve reproducibility
     with open(config.prompt_template, 'r') as f:
         chat_template = f.read()
     train_datasets: list[dict] = []
@@ -354,21 +444,12 @@ if __name__ == '__main__':
                 if line.strip():
                     val_datasets.append(json.loads(line))
 
-    # data moderator: (1) extract ground_truth answer str for grader to use; (2) if it is sft, moderate the response format to fit with grading criteria.
-    # It is dataset specific. In the future need to move it to a better place.
-    if config.task_name == 'gsm8k':
-        for item in train_datasets:
-            item['**final_answer'] = item['answer'][item['answer'].find('####') + 4:].strip()
-        if config.inference_backend == 'sft':
-            for item in train_datasets:
-                item['answer'] = item['answer'].replace('\n#### ', '</think> <answer> ') + ' </answer>'
-            for item in val_datasets:
-                item['answer'] = item['answer'].replace('\n#### ', '</think> <answer> ') + ' </answer>'
-    else:
-        raise NotImplementedError
+    # data moderation, which is task-specific
+    data_moderater(config.task_name, train_datasets, val_datasets, is_sft=config.inference_backend == 'sft')
 
     # launch vllm server, then replace dummy parameter with the real one
-    print('Setting up vllm server...')
+    print('Setting up inference server...')
+    inference_serv_proc = None
     if config.inference_backend == 'vllm':
         if config.base_model_format == 'lllm':
             init_vllm_model_path = config.inference_vllm_dummy_model_path
@@ -446,6 +527,7 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError
 
+    # compute naive statistics, print to both screen and wandb
     n_samp_per_batch = int(config.trainer.batch_size // config.trainer.group_size)
     stats = {
         'stat_model_param': model.count_parameters()[0],
@@ -459,14 +541,26 @@ if __name__ == '__main__':
     # wandb
     wandb.init(project=('LLLM/' + original_save_path).replace('/', '|'), name=config.save_path.replace('/', '|'), config=asdict(config) | stats, dir=os.path.join(config.save_path, 'wandb_logs'))
 
-    stime = time.time()
-    tot_sample_trained = 0
-
     # fuck antlr4
     soft_rlimit, hard_rlimit = resource.getrlimit(resource.RLIMIT_STACK)
     resource.setrlimit(resource.RLIMIT_STACK, (min(1048576 * 1024, hard_rlimit), hard_rlimit))
 
-    # main loop
+    # prepare and start the rollout loop
+    backend_specific_inference_params = {}
+    if config.inference_backend == 'vllm':
+        backend_specific_inference_params |= {
+            'vllm_base_url': vllm_base_url,
+            'init_vllm_model_path': init_vllm_model_path,
+            'vllm_sampling_params': vllm_sampling_params,
+        }
+
+    weight_version = start_step - 1
+    rollout_queue = queue.Queue(maxsize=config.trainer.async_rl_maxstep + 1)
+    rollout_thread = threading.Thread(target=rollout_mainloop, args=(config, train_datasets, start_step, rollout_queue, inference_serv_proc, backend_specific_inference_params))
+    rollout_thread.start()
+
+    # main trainer loop
+    stime = time.time()
     try:
         for now_step in tqdm(range(start_step, config.trainer.tot_steps), desc='training'):
             # TODO: support other LR
@@ -482,43 +576,36 @@ if __name__ == '__main__':
                 ground_truths.append(item['**final_answer'])
             
             print('Inferencing...')
-            if config.inference_backend == 'vllm':
-                rollout_completions = vllm_utils.generate_completions(vllm_base_url, init_vllm_model_path, prompts, vllm_sampling_params, config.trainer.rollout_batch_size)
-            elif config.inference_backend == 'lllm':
-                # self batch
-                rollout_completions = []
-                for i in tqdm(range(0, len(prompts), config.trainer.rollout_batch_size)):
-                    rollout_completions.extend(
-                        generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, max_seq_len=config.trainer.max_seqlen_clipping, include_stop_str_in_output=True, verbose=False)
-                    )
-                torch.cuda.synchronize()
-            elif config.inference_backend == 'sft':
-                # extract
-                rollout_completions = [LCompletion(prompt=prompt, 
-                                                   text=full_item[config.inference_sft_field_name] + (tokenizer.eos_token if tokenizer.eos_token is not None else ''), token_ids=None, finish_reason='stop') 
-                                        for prompt, full_item in zip(prompts, train_data_repeated)]
-            else:
-                raise NotImplementedError
+            rollout_databody = rollout_queue.get()
+            assert rollout_databody['state'] == 'normal'
+            rollout_completions = rollout_databody['rollout']
             rollout_responses = [c.text if c.text else ' ' for c in rollout_completions]
             response_token_ids = [c.token_ids if c.token_ids else [0] for c in rollout_completions] if len(rollout_completions) > 0 and rollout_completions[0].token_ids else None
+            rollout_logprobs = maybe_collate_logprobs_to_tensor(prompts, rollout_completions, tokenizer, model.dtype, model.device)
             # add thing to prevent empty response which results in div0 error.
 
             rollout_metadata = ({
-                'length/mean': sum([len(c.token_ids) for c in rollout_completions]) / len(rollout_completions) } if rollout_completions and rollout_completions[0].token_ids else { }) | {
-                    'length/truncate_ratio': sum([c.finish_reason != 'stop' for c in rollout_completions]) / len(rollout_completions)
+                'length/mean': sum([len(c.token_ids) for c in rollout_completions]) / len(rollout_completions) } if rollout_completions and rollout_completions[0].token_ids else { }) | \
+                {
+                    'length/truncate_ratio': sum([c.finish_reason != 'stop' for c in rollout_completions]) / len(rollout_completions),
+                    'version_diff': now_step - rollout_databody['weight_version'] - 1
                 }
 
             print('Training...')
             # fully online RL
-            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.clip_higher_range, config.trainer.loss_normalization, config.trainer.normalization_constant, response_token_ids=response_token_ids, max_seqlen_clipping=config.trainer.max_seqlen_clipping, is_sft=config.inference_backend == 'sft') # response_token_ids for debug
+            loss, metadata = grpo_train_step(
+                model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, config.trainer.importance_reweighting_method, rollout_logprobs, config.trainer.cliprange, config.trainer.clip_higher_range, config.trainer.loss_normalization, config.trainer.normalization_constant, response_token_ids=response_token_ids, max_seqlen_clipping=config.trainer.max_seqlen_clipping, is_sft=config.inference_backend == 'sft') # response_token_ids for debug
 
             print('Logging...')
             train_metadata = metadata | rollout_metadata | {'loss': loss.item(), 'time': time.time() - stime, 'lr': now_lr, 'epoch': (now_step + 1) * n_samp_per_batch / len(train_datasets)}
             train_metadata = {('train/' + k): v for k, v in train_metadata.items()}
-            print('\n'.join([k + '=' + (f'{train_metadata[k].item()}' if isinstance(train_metadata[k], torch.Tensor) else f'{train_metadata[k]}') for k in ['train/loss', 'train/grad_norm', 'train/token_entropy', 'train/length/mean', 'train/reward/mean', 'train/min_response_len', 'train/max_response_len'] if k in train_metadata]))
+            print('\n'.join([k + '=' + (f'{train_metadata[k].item()}' if isinstance(train_metadata[k], torch.Tensor) else f'{train_metadata[k]}') for k in ['train/loss', 'train/grad_norm', 'train/token_entropy', 'train/length/mean', 'train/reward/mean', 'train/min_response_len', 'train/max_response_len', 'train/version_diff'] if k in train_metadata]))
             wandb.log(train_metadata, step=now_step)
 
             print('Weight sync...')
+            weight_sync_signals['trainer'] = 'need_sync'
+            while weight_sync_signals['rollout'] != 'ready':
+                time.sleep(0.5)
             if config.inference_backend == 'vllm':
                 # no need to re-init
                 vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)
@@ -528,6 +615,8 @@ if __name__ == '__main__':
                 torch.cuda.synchronize()
             else:
                 raise NotImplementedError
+            weight_sync_signals['trainer'] = 'no_need_sync'
+            weight_version = now_step
 
             if now_step % config.val_step == 0 or now_step == config.trainer.tot_steps - 1:
                 print('Validation...')
@@ -598,10 +687,26 @@ if __name__ == '__main__':
                         lllm_ckpt_to_hf_ckpt(str(ckpt_save_path), config.base_model_ckpt, str(save_path / 'hf_ckpts' / f'step_{now_step:07}'))
                         print(f'Huggingface format checkpoint saved to', str(save_path / 'hf_ckpts' / f'step_{now_step:07}'))
 
+            del rollout_completions
+
     finally:
         # sanitize
         resource.setrlimit(resource.RLIMIT_STACK, (soft_rlimit, hard_rlimit))
-        if config.inference_backend == 'vllm':
-            vllm_utils.stop_server(inference_serv_proc)
+        weight_sync_signals['trainer'] = 'stopped'
 
-    print('Done!')
+    remain_rollout_cnt = 0
+    while True:
+        try:
+            if rollout_queue.qsize == 0: break
+            remain_rollout = rollout_queue.get(timeout=3)
+            if remain_rollout['state'] == 'final_sentinel':
+                print('rollout queue cleaned.')
+                break
+            else:
+                remain_rollout_cnt += 1
+                pass
+                # print(remain_rollout)
+        except queue.Empty:
+            pass
+
+    print(f'Done! (# remain rollouts: {remain_rollout_cnt})')

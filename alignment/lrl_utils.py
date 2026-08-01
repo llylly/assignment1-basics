@@ -5,6 +5,7 @@ import torch
 from transformers import PreTrainedTokenizerBase, PreTrainedModel
 from basics.ltokenizer import LTokenizer
 from basics.lmodeling import LTransformerLM
+from basics.linference import LCompletion
 from alignment.benchmarks.lbenchmarks import *
 
 def tokenize_prompt_and_output(
@@ -37,6 +38,20 @@ def tokenize_prompt_and_output(
         'labels': labels,
         'response_mask': response_mask
     }
+
+def maybe_collate_logprobs_to_tensor(prompt_strs: list[str], rollouts: list[LCompletion], tokenizer: LTokenizer | PreTrainedTokenizerBase, dtype: torch.dtype, device: torch.device) -> torch.Tensor | None:
+    if len(rollouts) == 0 or rollouts[0].log_probs is None:
+        return None
+    prompt_lens = []
+    max_len = 0
+    for i, (prompt, rollout) in enumerate(zip(prompt_strs, rollouts)):
+        tok_prompt = tokenizer.encode(prompt)
+        prompt_lens.append(len(tok_prompt))
+        max_len = max(max_len, len(tok_prompt) + len(rollout.log_probs) - 1)
+    log_prob_chunks = torch.zeros((len(prompt_strs), max_len), dtype=dtype, device=device)
+    for i, rollout in enumerate(rollouts):
+        log_prob_chunks[i][prompt_lens[i]-1: prompt_lens[i] + len(rollout.log_probs) - 1] = torch.tensor(rollout.log_probs)
+    return log_prob_chunks
 
 def get_response_log_probs(
         model: PreTrainedModel | LTransformerLM,
@@ -252,4 +267,17 @@ def compute_valloss(batch_size: int, model: LTransformerLM, tokenizer: LTokenize
     mean_token_entropy = tot_mean_token_entropy / len(val_datasets)
     return {'loss': loss.item()}, {'loss': loss.item(), 'token_entropy': mean_token_entropy.item()}
 
-
+def data_moderater(task_name: str, train_datasets: list[dict], val_datasets: list[dict], is_sft: bool):
+    
+    if task_name == 'gsm8k':
+        # data moderator: (1) extract ground_truth answer str for grader to use; (2) if it is sft, moderate the response format to fit with grading criteria.
+        for item in train_datasets:
+            item['**final_answer'] = item['answer'][item['answer'].find('####') + 4:].strip()
+        if is_sft:
+            for item in train_datasets:
+                item['answer'] = item['answer'].replace('\n#### ', '</think> <answer> ') + ' </answer>'
+            for item in val_datasets:
+                item['answer'] = item['answer'].replace('\n#### ', '</think> <answer> ') + ' </answer>'
+    else:
+        raise NotImplementedError
+    
