@@ -335,6 +335,11 @@ uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_g
 
 offpolicy rl:
 (GRPO) PYTORCH_ALLOC_CONF=expandable_segments:True uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_async_grpo.yaml --inference_backend vllm --device cuda:2 --inference_device cuda:3
+(GRPO no IS weighting) uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_async_grpo_noreweight.yaml --inference_backend vllm --device cuda:2 --inference_device cuda:3
+(GRPO no clip) uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_async_grpo_noclip.yaml --inference_backend vllm --device cuda:2 --inference_device cuda:3
+(GSPO) uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_async_gspo.yaml --inference_backend vllm --device cuda:2 --inference_device cuda:3
+(DAPO) uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_async_dapo.yaml --inference_backend vllm --device cuda:2 --inference_device cuda:3
+(CISPO) uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_async_cispo.yaml --inference_backend vllm --device cuda:2 --inference_device cuda:3
 """
 
 if __name__ == '__main__':
