@@ -69,6 +69,9 @@ class RLTrainerConfig:
     loss_normalization: Literal["sequence", "constant"] = "sequence"
     normalization_constant: int | None = None
 
+    # async stale steps
+    async_rl_maxstep: int = 0 # 0 means fully online, each step 
+
 @dataclass
 class RLConfig:
     trainer: RLTrainerConfig
@@ -103,7 +106,6 @@ class RLConfig:
     inference_vllm_dummy_model_path: str | None = None
     # if base_model_format == 'vllm', we need a dummy hf model path to launch vllm inference engine
     inference_vllm_gpu_memory_utilization: float = 0.8
-    inference_lllm_max_seq_len: int | None = None # We can additionally constrain max total ctx length for lllm backend
     inference_sft_field_name: str | None = None # if it is sft, need to know the field name to extract response
     inference_sft_run_lllm_eval: bool = True # if it is sft, whether to use our lllm inference to evaluate
     run_name: str | None = ''
@@ -142,6 +144,7 @@ def grpo_train_step(
         loss_normalization: Literal["sequence", "constant"] = "sequence",
         normalization_constant: int | None = None,
         response_token_ids: list | None = None, # if provided, no need to retokenized response to ensure inference-training consistency
+        max_seqlen_clipping: int | None = None,
         is_sft: bool = False # we view sft as a special mode that corresponds to response_token from instruction set, all reward = 1, and group_size = 1
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
 
@@ -167,6 +170,9 @@ def grpo_train_step(
     # stage 3: retokenize
     tokenized = tokenize_prompt_and_output(repeated_prompts, rollout_responses, tokenizer, response_token_ids)
     input_ids, labels, response_masks = tokenized['input_ids'].to(model.device), tokenized['labels'].to(model.device), tokenized['response_mask'].to(model.device)
+    if max_seqlen_clipping is not None:
+        # trim
+        input_ids, labels, response_masks = input_ids[:, :max_seqlen_clipping], labels[:, :max_seqlen_clipping], response_masks[:, :max_seqlen_clipping]
 
     # stage 4pre: prune zero advantaged sequences
     a_prune_eps = 0.00001
@@ -231,7 +237,7 @@ def grpo_train_step(
 Usage:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 (on RTX 6000 Ada)
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --trainer.gradient_accumulation_steps 32 (on H100)
-taskset -c 0-5,8-31 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --inference_backend lllm --device cuda --inference_device cuda --trainer.gradient_accumulation_steps 128 --trainer.rollout_batch_size 8 --inference_lllm_max_seq_len 700 --run-name 4090 (on single 4090)
+taskset -c 0-5,8-31 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --inference_backend lllm --device cuda --inference_device cuda --trainer.gradient_accumulation_steps 128 --trainer.rollout_batch_size 8 --trainer.max_seqlen_clipping 700 --run-name 4090 (on single 4090)
 Learning rate ablation:
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.00002 --run-name lr_2e-5
 uv run alignment/lrl.py --config_path configs/rl_config_olmo_base_gsm8k_r1zero_grpo.yaml --device cuda:0 --inference_device cuda:3 --trainer.learning_rate 0.000005 --run-name lr_5e-6
@@ -300,6 +306,7 @@ if __name__ == '__main__':
 
     # construct model and optimizer
     print('Loading model and optimizer...')
+    torch.cuda.set_device(torch.device(config.device))
     if config.base_model_format == 'lllm':
         with open(config.model_config, 'r') as f:
             model_config = yaml.safe_load(f)
@@ -324,7 +331,8 @@ if __name__ == '__main__':
     else:
         start_step = 0
 
-    config.trainer.max_seqlen_clipping = model.max_seq_len
+    if config.trainer.max_seqlen_clipping is None:
+        config.trainer.max_seqlen_clipping = model.max_seq_len
     if config.trainer.rollout_batch_size is None:
         config.trainer.rollout_batch_size = config.trainer.batch_size
 
@@ -431,7 +439,7 @@ if __name__ == '__main__':
             eval_config |= {
                 'backend': 'lllm',
                 'lllm_server_no_host': True,
-                'lllm_max_seq_len': config.inference_lllm_max_seq_len
+                'lllm_max_seq_len': config.trainer.max_seqlen_clipping
             }
         eval_config = GSM8KEvalConfig(**eval_config)
     else:
@@ -480,7 +488,7 @@ if __name__ == '__main__':
                 rollout_completions = []
                 for i in tqdm(range(0, len(prompts), config.trainer.rollout_batch_size)):
                     rollout_completions.extend(
-                        generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, max_seq_len=config.inference_lllm_max_seq_len, include_stop_str_in_output=True, verbose=False)
+                        generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, max_seq_len=config.trainer.max_seqlen_clipping, include_stop_str_in_output=True, verbose=False)
                     )
                 torch.cuda.synchronize()
             elif config.inference_backend == 'sft':
@@ -501,7 +509,7 @@ if __name__ == '__main__':
 
             print('Training...')
             # fully online RL
-            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.clip_higher_range, config.trainer.loss_normalization, config.trainer.normalization_constant, response_token_ids=response_token_ids, is_sft=config.inference_backend == 'sft') # response_token_ids for debug
+            loss, metadata = grpo_train_step(model, tokenizer, optimizer, config.trainer.gradient_accumulation_steps, config.trainer.gradient_clipping, task_grader, prompts, rollout_responses, ground_truths, config.trainer.group_size, config.trainer.baseline, config.trainer.advantage_eps, config.trainer.advantage_normalizer, "none", None, config.trainer.cliprange, config.trainer.clip_higher_range, config.trainer.loss_normalization, config.trainer.normalization_constant, response_token_ids=response_token_ids, max_seqlen_clipping=config.trainer.max_seqlen_clipping, is_sft=config.inference_backend == 'sft') # response_token_ids for debug
 
             print('Logging...')
             train_metadata = metadata | rollout_metadata | {'loss': loss.item(), 'time': time.time() - stime, 'lr': now_lr, 'epoch': (now_step + 1) * n_samp_per_batch / len(train_datasets)}
