@@ -171,6 +171,8 @@ def compute_policy_gradient_loss(
         assert old_log_probs is not None
         metadata['clip_low_ratio'] = 0.0
         metadata['clip_high_ratio'] = 0.0
+        if response_mask is not None:
+            metadata['mean_log_prob_diff'] = (((policy_log_probs - old_log_probs) * response_mask).abs().sum() / response_mask.sum()).item()
         loss = - raw_rewards_or_advantages * (policy_log_probs - old_log_probs).exp()
     
     elif importance_reweighting_method == 'grpo':
@@ -178,6 +180,7 @@ def compute_policy_gradient_loss(
         assert cliprange
         w = (policy_log_probs - old_log_probs).exp()
         if response_mask is not None:
+            metadata['mean_log_prob_diff'] = (((policy_log_probs - old_log_probs) * response_mask).abs().sum() / response_mask.sum()).item()
             metadata['clip_high_ratio'] = ((raw_rewards_or_advantages > 0.001) * (w > 1. + cliprange) * response_mask).sum().item() / response_mask.sum().item()
             metadata['clip_low_ratio'] = ((raw_rewards_or_advantages < -0.001) * (w < 1. - cliprange) * response_mask).sum().item() / response_mask.sum().item()
         loss = - torch.minimum(raw_rewards_or_advantages * w, raw_rewards_or_advantages * w.clip(1. - cliprange, 1. + cliprange))
@@ -187,6 +190,7 @@ def compute_policy_gradient_loss(
         assert cliprange
         w = (policy_log_probs - old_log_probs).exp()
         if response_mask is not None:
+            metadata['mean_log_prob_diff'] = (((policy_log_probs - old_log_probs) * response_mask).abs().sum() / response_mask.sum()).item()
             metadata['clip_high_ratio'] = ((w > 1. + cliprange) * response_mask).sum().item() / response_mask.sum().item()
         metadata['clip_low_ratio'] = 0.
         loss = - raw_rewards_or_advantages * w.clip(max=1. + cliprange)
@@ -197,6 +201,7 @@ def compute_policy_gradient_loss(
         assert clip_higher_range
         w = (policy_log_probs - old_log_probs).exp()
         if response_mask is not None:
+            metadata['mean_log_prob_diff'] = (((policy_log_probs - old_log_probs) * response_mask).abs().sum() / response_mask.sum()).item()
             metadata['clip_high_ratio'] = ((raw_rewards_or_advantages > 0.001) * (w > 1. + clip_higher_range) * response_mask).sum().item() / response_mask.sum().item()
             metadata['clip_low_ratio'] = ((raw_rewards_or_advantages < -0.001) * (w < 1. - cliprange) * response_mask).sum().item() / response_mask.sum().item()
         loss = - torch.minimum(raw_rewards_or_advantages.to(policy_log_probs) * w, raw_rewards_or_advantages.to(policy_log_probs) * w.clip(1. - cliprange, 1. + clip_higher_range))
@@ -206,6 +211,7 @@ def compute_policy_gradient_loss(
         assert cliprange
         assert response_mask is not None
         w = torch.exp(((policy_log_probs - old_log_probs) * response_mask).sum(dim=-1) / response_mask.sum(dim=-1)).view(-1, 1)
+        metadata['mean_log_prob_diff'] = (((policy_log_probs - old_log_probs) * response_mask).abs().sum() / response_mask.sum()).item()
         metadata['clip_high_ratio'] = ((raw_rewards_or_advantages > 0.001) * (w > 1. + cliprange)).sum().item() / raw_rewards_or_advantages.numel()
         metadata['clip_low_ratio'] = ((raw_rewards_or_advantages < -0.001) * (w < 1. - cliprange)).sum().item() / raw_rewards_or_advantages.numel()
         loss = - torch.minimum(raw_rewards_or_advantages.to(w) * w, raw_rewards_or_advantages.to(w) * w.clip(1. - cliprange, 1. + cliprange))

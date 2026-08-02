@@ -1,5 +1,10 @@
 """
-    Entry script for pretrain
+    Entry script for RL and SFT
+
+    TODO:
+        [ ] Full precision for logprob compute
+        [ ] Reorganize constract logprob compute for better structure
+        [ ] Ablation study and then reduce the stale steps
 """
 
 from typing import Callable, Literal
@@ -114,7 +119,7 @@ class RLConfig:
     """run_name is appended to both save_path and wandb"""
     val_step: int = 20
     rollout_save_step: int = 10
-    ckpt_save_step: int = 50
+    ckpt_save_step: int = 60
     logging_level: Literal["ERROR", "WARNING", "INFO"] = "INFO" # mainly used by vllm
     debug: bool = False 
     """if debug, dump more statistics (act norm, grad norm per layer) on wandb"""
@@ -247,9 +252,29 @@ def rollout_mainloop(config: RLConfig, train_datasets: list[dict], start_step: i
         init_vllm_model_path = backend_specific_inference_params['init_vllm_model_path']
         vllm_sampling_params = backend_specific_inference_params['vllm_sampling_params']
     
-    try:
-        for now_step in tqdm(range(start_step, config.trainer.tot_steps), desc='inferencing'):
+    for now_step in tqdm(range(start_step, config.trainer.tot_steps), desc='inferencing'):
 
+        if weight_sync_signals['trainer'] == 'need_sync':
+            weight_sync_signals['rollout'] = 'ready'
+            while weight_sync_signals['trainer'] != 'no_need_sync':
+                # busy sleep wait
+                time.sleep(0.1)
+            weight_sync_signals['rollout'] = 'not_ready'
+        if weight_sync_signals['trainer'] == 'stopped':
+            break
+
+        # indexing the training data
+        data_indexes = [idx % len(train_datasets) for idx in range(now_step * n_samp_per_batch, (now_step + 1) * n_samp_per_batch)] # wrap around
+        train_data_batch = [train_datasets[idx] for idx in data_indexes]
+        train_data_repeated = [x for y in [[item] * config.trainer.group_size for item in train_data_batch] for x in y] # [q1, q1, q1, q2, q2, q2, ...]
+        prompts = [question_formulator(item) for item in train_data_repeated]
+        ground_truths = []
+        for item in train_data_repeated:
+            ground_truths.append(item['**final_answer'])
+
+        # wait till space in queue
+        while queue.full():
+            time.sleep(0.1)
             if weight_sync_signals['trainer'] == 'need_sync':
                 weight_sync_signals['rollout'] = 'ready'
                 while weight_sync_signals['trainer'] != 'no_need_sync':
@@ -257,60 +282,49 @@ def rollout_mainloop(config: RLConfig, train_datasets: list[dict], start_step: i
                     time.sleep(0.1)
                 weight_sync_signals['rollout'] = 'not_ready'
             if weight_sync_signals['trainer'] == 'stopped':
-                raise KeyboardInterrupt
-
-            # indexing the training data
-            data_indexes = [idx % len(train_datasets) for idx in range(now_step * n_samp_per_batch, (now_step + 1) * n_samp_per_batch)] # wrap around
-            train_data_batch = [train_datasets[idx] for idx in data_indexes]
-            train_data_repeated = [x for y in [[item] * config.trainer.group_size for item in train_data_batch] for x in y] # [q1, q1, q1, q2, q2, q2, ...]
-            prompts = [question_formulator(item) for item in train_data_repeated]
-            ground_truths = []
-            for item in train_data_repeated:
-                ground_truths.append(item['**final_answer'])
-
-            # wait till space in queue
-            while queue.full():
-                time.sleep(0.1)
-                if weight_sync_signals['trainer'] == 'need_sync':
-                    weight_sync_signals['rollout'] = 'ready'
-                    while weight_sync_signals['trainer'] != 'no_need_sync':
-                        # busy sleep wait
-                        time.sleep(0.1)
-                    weight_sync_signals['rollout'] = 'not_ready'
-                if weight_sync_signals['trainer'] == 'stopped':
-                    raise KeyboardInterrupt
-            
-            if config.inference_backend == 'vllm':
-                rollout_completions = vllm_utils.generate_completions(vllm_base_url, init_vllm_model_path, prompts, vllm_sampling_params, config.trainer.rollout_batch_size, return_log_probs=config.trainer.async_rl_maxstep > 0)
-            elif config.inference_backend == 'lllm':
-                # self batch
-                rollout_completions = []
-                for i in tqdm(range(0, len(prompts), config.trainer.rollout_batch_size)):
-                    rollout_completions.extend(
-                        generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, max_seq_len=config.trainer.max_seqlen_clipping, include_stop_str_in_output=True, return_log_probs=config.trainer.async_rl_maxstep > 0, verbose=False)
-                    )
-                torch.cuda.synchronize()
-            elif config.inference_backend == 'sft':
-                # extract
-                rollout_completions = [LCompletion(prompt=prompt, 
-                                                    text=full_item[config.inference_sft_field_name] + (tokenizer.eos_token if tokenizer.eos_token is not None else ''), token_ids=None, finish_reason='stop', log_probs=None) 
-                                        for prompt, full_item in zip(prompts, train_data_repeated)]
-            else:
-                raise NotImplementedError
-
-            queue.put({
-                'state': 'normal',
-                'rollout': rollout_completions,
-                'weight_version': weight_version
-            })
-            
-    finally:
+                break
+        
         if config.inference_backend == 'vllm':
-            vllm_utils.stop_server(inference_serv_proc)
+            rollout_completions = vllm_utils.generate_completions(vllm_base_url, init_vllm_model_path, prompts, vllm_sampling_params, config.trainer.rollout_batch_size, return_log_probs=config.trainer.async_rl_maxstep > 0)
+        elif config.inference_backend == 'lllm':
+            # self batch
+            rollout_completions = []
+            for i in tqdm(range(0, len(prompts), config.trainer.rollout_batch_size)):
+                rollout_completions.extend(
+                    generate(model, prompts[i: i + config.trainer.rollout_batch_size], tokenizer, config.trainer.rollout_max_new_tokens, config.trainer.rollout_temperature, extra_stop_tokens=config.trainer.rollout_stop_words, max_seq_len=config.trainer.max_seqlen_clipping, include_stop_str_in_output=True, return_log_probs=config.trainer.async_rl_maxstep > 0, verbose=False)
+                )
+            torch.cuda.synchronize()
+        elif config.inference_backend == 'sft':
+            # extract
+            rollout_completions = [LCompletion(prompt=prompt, 
+                                                text=full_item[config.inference_sft_field_name] + (tokenizer.eos_token if tokenizer.eos_token is not None else ''), token_ids=None, finish_reason='stop', log_probs=None) 
+                                    for prompt, full_item in zip(prompts, train_data_repeated)]
+        else:
+            raise NotImplementedError
 
-    queue.put({
-        'state': 'final_sentinel'
-    })
+        queue.put({
+            'state': 'normal',
+            'rollout': rollout_completions,
+            'weight_version': weight_version
+        })
+        
+    while True:
+        if weight_sync_signals['trainer'] == 'need_sync':
+            weight_sync_signals['rollout'] = 'ready'
+            while weight_sync_signals['trainer'] != 'no_need_sync':
+                # busy sleep wait
+                time.sleep(0.1)
+            weight_sync_signals['rollout'] = 'not_ready'
+        if not queue.full():
+            try:
+                queue.put({
+                    'state': 'final_sentinel'
+                }, timeout=3)
+                break
+            except Exception:
+                continue
+        time.sleep(0.1)
+    print('rollout worker done')
 
 
 """
@@ -614,6 +628,8 @@ if __name__ == '__main__':
             weight_sync_signals['trainer'] = 'need_sync'
             while weight_sync_signals['rollout'] != 'ready':
                 time.sleep(0.1)
+                if not rollout_thread.is_alive():
+                    break
             if config.inference_backend == 'vllm':
                 # no need to re-init
                 vllm_utils.sync_policy_weights(model, vllm_base_url, weight_sync_group, weight_format_converter)
@@ -667,8 +683,11 @@ if __name__ == '__main__':
                             'completion': completion.text,
                             'completion_reason': completion.finish_reason
                         } | ({} if completion.token_ids is None else {
-                                'completion_len': len(completion.token_ids)
-                            }))
+                            'completion_len': len(completion.token_ids),
+                            'raw_token_ids': completion.token_ids
+                        }) | ({} if completion.log_probs is None else {
+                            'log_probs': completion.log_probs
+                        }))
                 trace_save_path = save_path / 'train' / f'step_{now_step:07}'
                 if not os.path.exists(trace_save_path):
                     os.makedirs(trace_save_path)
@@ -701,6 +720,9 @@ if __name__ == '__main__':
         # sanitize
         resource.setrlimit(resource.RLIMIT_STACK, (soft_rlimit, hard_rlimit))
         weight_sync_signals['trainer'] = 'stopped'
+
+        if config.inference_backend == 'vllm':
+            vllm_utils.stop_server(inference_serv_proc)
 
     remain_rollout_cnt = 0
     while True:
